@@ -40,7 +40,7 @@ BONUS_COOLDOWN     = 43200
 REF_BONUS          = 1.0
 VALID_REF_MESSAGES = 10
 
-BAN_MESSAGE = "🚫егор иди нахуй"
+BAN_MESSAGE = "🚫Вы заблокированы и не можете участвовать в розыгрышах в боте."
 
 POPOLNIT_AMOUNT = 50
 
