@@ -419,7 +419,6 @@ class Database:
 
     async def add_day_messages(self, user_id: int, chat_id: int, user_name: str, amount: int):
         today = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y-%m-%d")
-
         async with aiosqlite.connect(self.path) as db:
             await db.execute("""
                 INSERT INTO daily_stats (user_id, chat_id, user_name, date, msg_count)
@@ -433,7 +432,6 @@ class Database:
 
     async def remove_day_messages(self, user_id: int, chat_id: int, amount: int):
         today = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y-%m-%d")
-
         async with aiosqlite.connect(self.path) as db:
             await db.execute("""
                 UPDATE daily_stats
@@ -533,17 +531,11 @@ async def reward_inviter(bot: Bot, inviter_id: int) -> None:
 router    = Router()
 cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=COOLDOWN_SECONDS)
 
-def start_keyboard(is_admin=False):
+def start_keyboard():
     buttons = [
         [InlineKeyboardButton(text="🔗 Реферальная ссылка", callback_data="ref")],
         [InlineKeyboardButton(text="📊 Реферальная статистика", callback_data="refstats")]
     ]
-
-    if is_admin:
-        buttons.append(
-            [InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin")]
-        )
-
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # =========================
@@ -559,9 +551,7 @@ async def cmd_start(message: Message) -> None:
     await message.answer(
         "👋 Добро пожаловать!\n\n"
         "Выберите действие:",
-        reply_markup=start_keyboard(
-            message.from_user.id == ADMIN_ID
-        )
+        reply_markup=start_keyboard()
     )
 
 
@@ -574,38 +564,6 @@ async def ref_callback(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data == "refstats")
 async def refstats_callback(callback: CallbackQuery):
     await cmd_refstats(callback.message)
-    await callback.answer()
-
-
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа")
-        return
-
-    await callback.message.answer(
-        "⚙️ Админ-панель\n\n"
-
-        "💫 Баланс\n"
-        "/balance\n\n"
-
-        "📦 Подарки\n"
-        "/pending\n"
-        "/deliver id\n"
-        "/sendgift user_id gift_id\n\n"
-
-        "👑 VIP\n"
-        "/vip user_id\n"
-        "/unvip user_id\n"
-        "/viplist\n\n"
-
-        "🚫 Баны\n"
-        "/ban user_id\n"
-        "/unban user_id\n"
-        "/banlist\n\n"
-
-        "📊 Статистика\n"
-        "/daytop"
-    )
-
     await callback.answer()
 
 
@@ -655,6 +613,25 @@ async def cmd_refstats(message: Message) -> None:
         f"🎁 Следующая награда: {next_reward}\n\n"
         f"📈 Твой шанс: {chance:.3f}%"
     )
+
+# =========================
+# PRIVATE — /say (только для админа)
+# =========================
+
+@router.message(Command("say"), F.chat.type == "private")
+async def cmd_say(message: Message, bot: Bot) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip():
+        await message.answer("Использование: /say текст сообщения")
+        return
+    text = args[1].strip()
+    try:
+        await bot.send_message(MAIN_CHAT_ID, text)
+        await message.answer("✅ Сообщение отправлено в чат.")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить сообщение.\n\n📛 {e}")
 
 # =========================
 # PRIVATE — /vip (только для админа)
@@ -822,63 +799,40 @@ async def cmd_removemsgs(message: Message) -> None:
 
 @router.message(Command("addday"), F.chat.type == "private")
 async def cmd_addday(message: Message) -> None:
-
     if message.from_user.id != ADMIN_ID:
         return
-
     args = message.text.split()
-
     if len(args) < 3:
         await message.answer("Использование: /addday user_id количество")
         return
-
     try:
         user_id = int(args[1])
         amount = int(args[2])
     except ValueError:
         await message.answer("❌ Укажи ID и количество.")
         return
-
     name = await db.get_user_name(user_id)
-
-    await db.add_day_messages(
-        user_id,
-        MAIN_CHAT_ID,
-        name,
-        amount
-    )
-
+    await db.add_day_messages(user_id, MAIN_CHAT_ID, name, amount)
     await message.answer(
         f"✅ Добавлено {amount} сообщений в daytop\n"
         f"👤 {name} ({user_id})"
     )
 
-
 @router.message(Command("removeday"), F.chat.type == "private")
 async def cmd_removeday(message: Message) -> None:
-
     if message.from_user.id != ADMIN_ID:
         return
-
     args = message.text.split()
-
     if len(args) < 3:
         await message.answer("Использование: /removeday user_id количество")
         return
-
     try:
         user_id = int(args[1])
         amount = int(args[2])
     except ValueError:
         await message.answer("❌ Укажи ID и количество.")
         return
-
-    await db.remove_day_messages(
-        user_id,
-        MAIN_CHAT_ID,
-        amount
-    )
-
+    await db.remove_day_messages(user_id, MAIN_CHAT_ID, amount)
     await message.answer(
         f"✅ Убрано {amount} сообщений из daytop\n"
         f"👤 {user_id}"
@@ -1214,7 +1168,7 @@ async def cmd_bonus(message: Message) -> None:
     await message.reply(f"🎁 Бонус: +{bonus_amount:.3f}%\n📈 Новый шанс: {new_chance:.3f}%")
 
 # =========================
-# GROUP — /daytop (только для админа)
+# GROUP — /daytop
 # =========================
 
 @router.message(Command("daytop"))
