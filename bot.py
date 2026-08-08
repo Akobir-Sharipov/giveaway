@@ -171,6 +171,14 @@ class Database:
             ) as cur:
                 return await cur.fetchone() is not None
 
+    async def get_ban_reason(self, user_id: int) -> str:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT reason FROM banned_users WHERE user_id=?", (user_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row and row[0] else ""
+
     async def get_ban_list(self) -> list[tuple]:
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
@@ -1076,7 +1084,9 @@ async def cmd_stats(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     user_id = message.from_user.id
     chance, msg_count, _ = await db.get_user(user_id, message.chat.id)
@@ -1099,7 +1109,9 @@ async def cmd_top(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     top  = await db.get_top(message.chat.id)
     text = "🏆 Топ участников:\n\n"
@@ -1116,7 +1128,9 @@ async def cmd_winstop(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     top = await db.get_wins_top(message.chat.id)
     if not top:
@@ -1136,7 +1150,9 @@ async def cmd_reftop(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     top = await db.get_refs_top()
     if not top:
@@ -1156,7 +1172,9 @@ async def cmd_bonus(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     user_id = message.from_user.id
     name    = display_name(message.from_user)
@@ -1256,6 +1274,9 @@ async def group_handler(message: Message, bot: Bot) -> None:
     cache_key = (user_id, message.chat.id)
 
     if await db.is_banned(user_id):
+        reason = await db.get_ban_reason(user_id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
 
     if cache_key in cooldowns:
@@ -1311,7 +1332,7 @@ async def group_handler(message: Message, bot: Bot) -> None:
                 )
             else:
                 try:
-                    await bot.send_gift(user_id=user_id, random.choice(WIN_GIFT_IDS))
+                    await bot.send_gift(user_id=user_id, gift_id=random.choice(WIN_GIFT_IDS))
                     await send_log(bot, f"🎁 Подарок отправлен\n\n{name} ({user_id})\n💫 Остаток: {star_balance.amount - 15}⭐")
                     await bot.send_message(ADMIN_ID,
                         f"✅ Подарок успешно отправлен!\n\n👤 {name} ({user_id})\n💫 Остаток: {star_balance.amount - 15}⭐"
