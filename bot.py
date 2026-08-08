@@ -40,7 +40,7 @@ BONUS_COOLDOWN     = 43200
 REF_BONUS          = 1.0
 VALID_REF_MESSAGES = 10
 
-BAN_MESSAGE = "🚫 ."
+BAN_MESSAGE = "🚫егор иди нахуй"
 
 POPOLNIT_AMOUNT = 50
 
@@ -59,6 +59,11 @@ REF_GIFT_IDS = {
     20: ["5168043875654172773", "5170690322832818290",
          "5170521118301225164"],
 }
+
+WIN_GIFT_IDS = [
+    "5170233102089322756",
+    "5170233102089322756",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -1306,7 +1311,7 @@ async def group_handler(message: Message, bot: Bot) -> None:
                 )
             else:
                 try:
-                    await bot.send_gift(user_id=user_id, gift_id="5170233102089322756")
+                    await bot.send_gift(user_id=user_id, random.choice(WIN_GIFT_IDS))
                     await send_log(bot, f"🎁 Подарок отправлен\n\n{name} ({user_id})\n💫 Остаток: {star_balance.amount - 15}⭐")
                     await bot.send_message(ADMIN_ID,
                         f"✅ Подарок успешно отправлен!\n\n👤 {name} ({user_id})\n💫 Остаток: {star_balance.amount - 15}⭐"
