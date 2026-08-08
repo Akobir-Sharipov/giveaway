@@ -34,7 +34,7 @@ ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
 
 COOLDOWN_SECONDS   = 1
 START_CHANCE       = 0.1
-STEP               = 0.003
+STEP               = 0.002
 MAX_CHANCE         = 100.0
 BONUS_COOLDOWN     = 43200
 REF_BONUS          = 1.0
