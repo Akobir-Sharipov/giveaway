@@ -34,13 +34,13 @@ ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
 
 COOLDOWN_SECONDS   = 1
 START_CHANCE       = 0.1
-STEP               = 0.001
+STEP               = 0.003
 MAX_CHANCE         = 100.0
-BONUS_COOLDOWN     = 86400
+BONUS_COOLDOWN     = 43200
 REF_BONUS          = 1.0
 VALID_REF_MESSAGES = 10
 
-BAN_MESSAGE = "🚫 Вы заблокированы и не можете участвовать в розыгрышах в боте."
+BAN_MESSAGE = "🚫 ."
 
 POPOLNIT_AMOUNT = 50
 
