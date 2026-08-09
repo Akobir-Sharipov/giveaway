@@ -60,6 +60,18 @@ REF_GIFT_IDS = {
          "5170521118301225164"],
 }
 
+# =========================
+# PHOTOS (file_id из Telegram)
+# Загрузи каждое фото боту в личку командой /getfileid
+# и вставь полученный file_id сюда
+# =========================
+PHOTO_BONUS_SUCCESS = os.getenv("PHOTO_BONUS_SUCCESS", "")   # /bonus — успешно
+PHOTO_BONUS_FAIL    = os.getenv("PHOTO_BONUS_FAIL", "")      # /bonus — ещё не время
+PHOTO_STATS         = os.getenv("PHOTO_STATS", "")           # /stats
+PHOTO_TOP           = os.getenv("PHOTO_TOP", "")             # /top
+PHOTO_WINSTOP       = os.getenv("PHOTO_WINSTOP", "")         # /winstop
+PHOTO_REFTOP        = os.getenv("PHOTO_REFTOP", "")          # /reftop
+
 WIN_GIFT_IDS = [
     "5170233102089322756",
     "5170233102089322756",
@@ -655,6 +667,17 @@ async def cmd_say(message: Message, bot: Bot) -> None:
         await message.answer(f"❌ Не удалось отправить сообщение.\n\n📛 {e}")
 
 # =========================
+# PRIVATE — /getfileid (только для админа)
+# =========================
+
+@router.message(F.photo, F.chat.type == "private")
+async def get_file_id(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    file_id = message.photo[-1].file_id
+    await message.answer(f"📎 File ID:\n<code>{file_id}</code>", parse_mode="HTML")
+
+# =========================
 # PRIVATE — /vip (только для админа)
 # =========================
 
@@ -1100,13 +1123,17 @@ async def cmd_stats(message: Message) -> None:
     chance, msg_count, _ = await db.get_user(user_id, message.chat.id)
     wins = await db.get_wins_count(user_id, message.chat.id)
     valid_refs = await db.count_valid_refs(user_id)
-    await message.reply(
+    text = (
         f"📊 Статистика:\n\n"
         f"📈 Шанс: {chance:.3f}%\n"
         f"💬 Сообщений: {msg_count}\n"
         f"🏆 Побед за всё время: {wins}\n"
         f"👥 Валидных рефералов: {valid_refs}"
     )
+    if PHOTO_STATS:
+        await message.reply_photo(photo=PHOTO_STATS, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
 # GROUP — /top
@@ -1125,7 +1152,10 @@ async def cmd_top(message: Message) -> None:
     text = "🏆 Топ участников:\n\n"
     for i, (name, chance, count) in enumerate(top, start=1):
         text += f"{i}. {name} — {chance:.3f}% ({count} сообщ.)\n"
-    await message.reply(text)
+    if PHOTO_TOP:
+        await message.reply_photo(photo=PHOTO_TOP, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
 # GROUP — /winstop
@@ -1147,7 +1177,10 @@ async def cmd_winstop(message: Message) -> None:
     text = "🏆 Топ победителей за всё время:\n\n"
     for i, (name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} поб.\n"
-    await message.reply(text)
+    if PHOTO_WINSTOP:
+        await message.reply_photo(photo=PHOTO_WINSTOP, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
 # GROUP — /reftop
@@ -1169,7 +1202,10 @@ async def cmd_reftop(message: Message) -> None:
     text = "👥 Топ по рефералам за всё время:\n\n"
     for i, (_, name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} реф.\n"
-    await message.reply(text)
+    if PHOTO_REFTOP:
+        await message.reply_photo(photo=PHOTO_REFTOP, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
 # GROUP — /bonus
@@ -1191,12 +1227,20 @@ async def cmd_bonus(message: Message) -> None:
     if now - last_bonus < BONUS_COOLDOWN:
         hours_left = int((BONUS_COOLDOWN - (now - last_bonus)) // 3600)
         mins_left  = int((BONUS_COOLDOWN - (now - last_bonus)) % 3600 // 60)
-        await message.reply(f"⏳ Бонус уже получен.\nСледующий через: {hours_left} ч. {mins_left} мин.")
+        text = f"⏳ Бонус уже получен.\nСледующий через: {hours_left} ч. {mins_left} мин."
+        if PHOTO_BONUS_FAIL:
+            await message.reply_photo(photo=PHOTO_BONUS_FAIL, caption=text)
+        else:
+            await message.reply(text)
         return
     bonus_amount = round(random.uniform(0.05, 0.20), 3)
     new_chance   = min(round(chance + bonus_amount, 3), MAX_CHANCE)
     await db.update_user(user_id, message.chat.id, name, new_chance, msg_count, now)
-    await message.reply(f"🎁 Бонус: +{bonus_amount:.3f}%\n📈 Новый шанс: {new_chance:.3f}%")
+    text = f"🎁 Бонус: +{bonus_amount:.3f}%\n📈 Новый шанс: {new_chance:.3f}%"
+    if PHOTO_BONUS_SUCCESS:
+        await message.reply_photo(photo=PHOTO_BONUS_SUCCESS, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
 # GROUP — /daytop
