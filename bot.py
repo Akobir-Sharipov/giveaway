@@ -179,6 +179,14 @@ class Database:
                 row = await cur.fetchone()
         return row[0] if row and row[0] else ""
 
+    async def get_ban_reason(self, user_id: int) -> str:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT reason FROM banned_users WHERE user_id=?", (user_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row and row[0] else ""
+
     async def get_ban_list(self) -> list[tuple]:
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
