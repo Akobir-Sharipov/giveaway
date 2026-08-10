@@ -687,25 +687,17 @@ async def cmd_say(message: Message, bot: Bot) -> None:
         await message.answer(f"❌ Не удалось отправить сообщение.\n\n📛 {e}")
 
 # =========================
-# PRIVATE — /getfileid (только для админа)
-# =========================
-
-@router.message(F.photo, F.chat.type == "private")
-async def get_file_id(message: Message) -> None:
-    if message.from_user.id != ADMIN_ID:
-        return
-    file_id = message.photo[-1].file_id
-    await message.answer(f"📎 File ID:\n<code>{file_id}</code>", parse_mode="HTML")
-
-# =========================
 # PRIVATE — получение file_id фото (только для админа)
 # =========================
 
-@router.message(F.photo, F.chat.type == "private")
+@router.message(F.photo | F.document, F.chat.type == "private")
 async def get_file_id(message: Message) -> None:
     if message.from_user.id != ADMIN_ID:
         return
-    file_id = message.photo[-1].file_id
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    else:
+        file_id = message.document.file_id
     await message.answer(f"📎 File ID:\n<code>{file_id}</code>", parse_mode="HTML")
 
 # =========================
