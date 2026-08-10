@@ -34,13 +34,13 @@ ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
 
 COOLDOWN_SECONDS   = 1
 START_CHANCE       = 0.1
-STEP               = 0.001
+STEP               = 0.002
 MAX_CHANCE         = 100.0
-BONUS_COOLDOWN     = 86400
+BONUS_COOLDOWN     = 43200
 REF_BONUS          = 1.0
 VALID_REF_MESSAGES = 10
 
-BAN_MESSAGE = "🚫 Вы заблокированы и не можете участвовать в розыгрышах в боте."
+BAN_MESSAGE = "🚫Вы заблокированы и не можете участвовать в розыгрышах в боте."
 
 POPOLNIT_AMOUNT = 50
 
@@ -59,6 +59,35 @@ REF_GIFT_IDS = {
     20: ["5168043875654172773", "5170690322832818290",
          "5170521118301225164"],
 }
+
+# =========================
+# PHOTOS (file_id из Telegram)
+# Загрузи каждое фото боту в личку командой /getfileid
+# и вставь полученный file_id сюда
+# =========================
+PHOTO_BONUS_SUCCESS = os.getenv("PHOTO_BONUS_SUCCESS", "")   # /bonus — успешно
+PHOTO_BONUS_FAIL    = os.getenv("PHOTO_BONUS_FAIL", "")      # /bonus — ещё не время
+PHOTO_STATS         = os.getenv("PHOTO_STATS", "")           # /stats
+PHOTO_TOP           = os.getenv("PHOTO_TOP", "")             # /top
+PHOTO_WINSTOP       = os.getenv("PHOTO_WINSTOP", "")         # /winstop
+PHOTO_REFTOP        = os.getenv("PHOTO_REFTOP", "")          # /reftop
+
+WIN_GIFT_IDS = [
+    "5170233102089322756",
+    "5170233102089322756",
+]
+
+# =========================
+# PHOTOS (file_id из Telegram)
+# Отправь боту фото в личку — он вернёт file_id
+# Добавь file_id в переменные Railway
+# =========================
+PHOTO_BONUS_SUCCESS = os.getenv("PHOTO_BONUS_SUCCESS", "")
+PHOTO_BONUS_FAIL    = os.getenv("PHOTO_BONUS_FAIL", "")
+PHOTO_STATS         = os.getenv("PHOTO_STATS", "")
+PHOTO_TOP           = os.getenv("PHOTO_TOP", "")
+PHOTO_WINSTOP       = os.getenv("PHOTO_WINSTOP", "")
+PHOTO_REFTOP        = os.getenv("PHOTO_REFTOP", "")
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +194,30 @@ class Database:
                 "SELECT 1 FROM banned_users WHERE user_id=?", (user_id,)
             ) as cur:
                 return await cur.fetchone() is not None
+
+    async def get_ban_reason(self, user_id: int) -> str:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT reason FROM banned_users WHERE user_id=?", (user_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row and row[0] else ""
+
+    async def get_ban_reason(self, user_id: int) -> str:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT reason FROM banned_users WHERE user_id=?", (user_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row and row[0] else ""
+
+    async def get_ban_reason(self, user_id: int) -> str:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT reason FROM banned_users WHERE user_id=?", (user_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row and row[0] else ""
 
     async def get_ban_list(self) -> list[tuple]:
         async with aiosqlite.connect(self.path) as db:
@@ -419,7 +472,6 @@ class Database:
 
     async def add_day_messages(self, user_id: int, chat_id: int, user_name: str, amount: int):
         today = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y-%m-%d")
-
         async with aiosqlite.connect(self.path) as db:
             await db.execute("""
                 INSERT INTO daily_stats (user_id, chat_id, user_name, date, msg_count)
@@ -433,7 +485,6 @@ class Database:
 
     async def remove_day_messages(self, user_id: int, chat_id: int, amount: int):
         today = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y-%m-%d")
-
         async with aiosqlite.connect(self.path) as db:
             await db.execute("""
                 UPDATE daily_stats
@@ -533,17 +584,11 @@ async def reward_inviter(bot: Bot, inviter_id: int) -> None:
 router    = Router()
 cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=COOLDOWN_SECONDS)
 
-def start_keyboard(is_admin=False):
+def start_keyboard():
     buttons = [
         [InlineKeyboardButton(text="🔗 Реферальная ссылка", callback_data="ref")],
         [InlineKeyboardButton(text="📊 Реферальная статистика", callback_data="refstats")]
     ]
-
-    if is_admin:
-        buttons.append(
-            [InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin")]
-        )
-
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # =========================
@@ -559,9 +604,7 @@ async def cmd_start(message: Message) -> None:
     await message.answer(
         "👋 Добро пожаловать!\n\n"
         "Выберите действие:",
-        reply_markup=start_keyboard(
-            message.from_user.id == ADMIN_ID
-        )
+        reply_markup=start_keyboard()
     )
 
 
@@ -574,38 +617,6 @@ async def ref_callback(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data == "refstats")
 async def refstats_callback(callback: CallbackQuery):
     await cmd_refstats(callback.message)
-    await callback.answer()
-
-
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Нет доступа")
-        return
-
-    await callback.message.answer(
-        "⚙️ Админ-панель\n\n"
-
-        "💫 Баланс\n"
-        "/balance\n\n"
-
-        "📦 Подарки\n"
-        "/pending\n"
-        "/deliver id\n"
-        "/sendgift user_id gift_id\n\n"
-
-        "👑 VIP\n"
-        "/vip user_id\n"
-        "/unvip user_id\n"
-        "/viplist\n\n"
-
-        "🚫 Баны\n"
-        "/ban user_id\n"
-        "/unban user_id\n"
-        "/banlist\n\n"
-
-        "📊 Статистика\n"
-        "/daytop"
-    )
-
     await callback.answer()
 
 
@@ -655,6 +666,47 @@ async def cmd_refstats(message: Message) -> None:
         f"🎁 Следующая награда: {next_reward}\n\n"
         f"📈 Твой шанс: {chance:.3f}%"
     )
+
+# =========================
+# PRIVATE — /say (только для админа)
+# =========================
+
+@router.message(Command("say"), F.chat.type == "private")
+async def cmd_say(message: Message, bot: Bot) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip():
+        await message.answer("Использование: /say текст сообщения")
+        return
+    text = args[1].strip()
+    try:
+        await bot.send_message(MAIN_CHAT_ID, text)
+        await message.answer("✅ Сообщение отправлено в чат.")
+    except Exception as e:
+        await message.answer(f"❌ Не удалось отправить сообщение.\n\n📛 {e}")
+
+# =========================
+# PRIVATE — /getfileid (только для админа)
+# =========================
+
+@router.message(F.photo, F.chat.type == "private")
+async def get_file_id(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    file_id = message.photo[-1].file_id
+    await message.answer(f"📎 File ID:\n<code>{file_id}</code>", parse_mode="HTML")
+
+# =========================
+# PRIVATE — получение file_id фото (только для админа)
+# =========================
+
+@router.message(F.photo, F.chat.type == "private")
+async def get_file_id(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    file_id = message.photo[-1].file_id
+    await message.answer(f"📎 File ID:\n<code>{file_id}</code>", parse_mode="HTML")
 
 # =========================
 # PRIVATE — /vip (только для админа)
@@ -822,63 +874,40 @@ async def cmd_removemsgs(message: Message) -> None:
 
 @router.message(Command("addday"), F.chat.type == "private")
 async def cmd_addday(message: Message) -> None:
-
     if message.from_user.id != ADMIN_ID:
         return
-
     args = message.text.split()
-
     if len(args) < 3:
         await message.answer("Использование: /addday user_id количество")
         return
-
     try:
         user_id = int(args[1])
         amount = int(args[2])
     except ValueError:
         await message.answer("❌ Укажи ID и количество.")
         return
-
     name = await db.get_user_name(user_id)
-
-    await db.add_day_messages(
-        user_id,
-        MAIN_CHAT_ID,
-        name,
-        amount
-    )
-
+    await db.add_day_messages(user_id, MAIN_CHAT_ID, name, amount)
     await message.answer(
         f"✅ Добавлено {amount} сообщений в daytop\n"
         f"👤 {name} ({user_id})"
     )
 
-
 @router.message(Command("removeday"), F.chat.type == "private")
 async def cmd_removeday(message: Message) -> None:
-
     if message.from_user.id != ADMIN_ID:
         return
-
     args = message.text.split()
-
     if len(args) < 3:
         await message.answer("Использование: /removeday user_id количество")
         return
-
     try:
         user_id = int(args[1])
         amount = int(args[2])
     except ValueError:
         await message.answer("❌ Укажи ID и количество.")
         return
-
-    await db.remove_day_messages(
-        user_id,
-        MAIN_CHAT_ID,
-        amount
-    )
-
+    await db.remove_day_messages(user_id, MAIN_CHAT_ID, amount)
     await message.answer(
         f"✅ Убрано {amount} сообщений из daytop\n"
         f"👤 {user_id}"
@@ -1117,19 +1146,25 @@ async def cmd_stats(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     user_id = message.from_user.id
     chance, msg_count, _ = await db.get_user(user_id, message.chat.id)
     wins = await db.get_wins_count(user_id, message.chat.id)
     valid_refs = await db.count_valid_refs(user_id)
-    await message.reply(
+    text = (
         f"📊 Статистика:\n\n"
         f"📈 Шанс: {chance:.3f}%\n"
         f"💬 Сообщений: {msg_count}\n"
         f"🏆 Побед за всё время: {wins}\n"
         f"👥 Валидных рефералов: {valid_refs}"
     )
+    if PHOTO_STATS:
+        await message.reply_photo(photo=PHOTO_STATS, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
 # GROUP — /top
@@ -1140,13 +1175,18 @@ async def cmd_top(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     top  = await db.get_top(message.chat.id)
     text = "🏆 Топ участников:\n\n"
     for i, (name, chance, count) in enumerate(top, start=1):
         text += f"{i}. {name} — {chance:.3f}% ({count} сообщ.)\n"
-    await message.reply(text)
+    if PHOTO_TOP:
+        await message.reply_photo(photo=PHOTO_TOP, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
 # GROUP — /winstop
@@ -1157,7 +1197,9 @@ async def cmd_winstop(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     top = await db.get_wins_top(message.chat.id)
     if not top:
@@ -1166,7 +1208,10 @@ async def cmd_winstop(message: Message) -> None:
     text = "🏆 Топ победителей за всё время:\n\n"
     for i, (name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} поб.\n"
-    await message.reply(text)
+    if PHOTO_WINSTOP:
+        await message.reply_photo(photo=PHOTO_WINSTOP, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
 # GROUP — /reftop
@@ -1177,7 +1222,9 @@ async def cmd_reftop(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     top = await db.get_refs_top()
     if not top:
@@ -1186,7 +1233,10 @@ async def cmd_reftop(message: Message) -> None:
     text = "👥 Топ по рефералам за всё время:\n\n"
     for i, (_, name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} реф.\n"
-    await message.reply(text)
+    if PHOTO_REFTOP:
+        await message.reply_photo(photo=PHOTO_REFTOP, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
 # GROUP — /bonus
@@ -1197,7 +1247,9 @@ async def cmd_bonus(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        await message.reply(BAN_MESSAGE)
+        reason = await db.get_ban_reason(message.from_user.id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
     user_id = message.from_user.id
     name    = display_name(message.from_user)
@@ -1206,15 +1258,23 @@ async def cmd_bonus(message: Message) -> None:
     if now - last_bonus < BONUS_COOLDOWN:
         hours_left = int((BONUS_COOLDOWN - (now - last_bonus)) // 3600)
         mins_left  = int((BONUS_COOLDOWN - (now - last_bonus)) % 3600 // 60)
-        await message.reply(f"⏳ Бонус уже получен.\nСледующий через: {hours_left} ч. {mins_left} мин.")
+        text = f"⏳ Бонус уже получен.\nСледующий через: {hours_left} ч. {mins_left} мин."
+        if PHOTO_BONUS_FAIL:
+            await message.reply_photo(photo=PHOTO_BONUS_FAIL, caption=text)
+        else:
+            await message.reply(text)
         return
     bonus_amount = round(random.uniform(0.05, 0.20), 3)
     new_chance   = min(round(chance + bonus_amount, 3), MAX_CHANCE)
     await db.update_user(user_id, message.chat.id, name, new_chance, msg_count, now)
-    await message.reply(f"🎁 Бонус: +{bonus_amount:.3f}%\n📈 Новый шанс: {new_chance:.3f}%")
+    text = f"🎁 Бонус: +{bonus_amount:.3f}%\n📈 Новый шанс: {new_chance:.3f}%"
+    if PHOTO_BONUS_SUCCESS:
+        await message.reply_photo(photo=PHOTO_BONUS_SUCCESS, caption=text)
+    else:
+        await message.reply(text)
 
 # =========================
-# GROUP — /daytop (только для админа)
+# GROUP — /daytop
 # =========================
 
 @router.message(Command("daytop"))
@@ -1297,6 +1357,9 @@ async def group_handler(message: Message, bot: Bot) -> None:
     cache_key = (user_id, message.chat.id)
 
     if await db.is_banned(user_id):
+        reason = await db.get_ban_reason(user_id)
+        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
+        await message.reply(text)
         return
 
     if cache_key in cooldowns:
@@ -1345,14 +1408,14 @@ async def group_handler(message: Message, bot: Bot) -> None:
         try:
             star_balance = await bot.get_my_star_balance()
             if star_balance.amount < 15:
-                await db.add_pending_gift(user_id, name, "5170233102089322756", "победа")
+                await db.add_pending_gift(user_id, name, random.choice(WIN_GIFT_IDS), "победа")
                 await send_log(bot, f"⚠️ Недостаточно звёзд!\n\nБаланс: {star_balance.amount}⭐\nПобедитель: {name} ({user_id})\nДобавлен в /pending")
                 await bot.send_message(ADMIN_ID,
                     f"⚠️ Недостаточно звёзд!\n\n💫 Баланс: {star_balance.amount}⭐\n👤 {name} ({user_id})\n\nПодарок добавлен в /pending"
                 )
             else:
                 try:
-                    await bot.send_gift(user_id=user_id, gift_id="5170233102089322756")
+                    await bot.send_gift(user_id=user_id, gift_id=random.choice(WIN_GIFT_IDS))
                     await send_log(bot, f"🎁 Подарок отправлен\n\n{name} ({user_id})\n💫 Остаток: {star_balance.amount - 15}⭐")
                     await bot.send_message(ADMIN_ID,
                         f"✅ Подарок успешно отправлен!\n\n👤 {name} ({user_id})\n💫 Остаток: {star_balance.amount - 15}⭐"
