@@ -8,6 +8,7 @@ import aiosqlite
 import pytz
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
+    URLInputFile,
     Message,
     ChatMemberUpdated,
     LabeledPrice,
@@ -78,16 +79,14 @@ WIN_GIFT_IDS = [
 ]
 
 # =========================
-# PHOTOS (file_id из Telegram)
-# Отправь боту фото в личку — он вернёт file_id
-# Добавь file_id в переменные Railway
+# PHOTOS
 # =========================
-PHOTO_BONUS_SUCCESS = os.getenv("PHOTO_BONUS_SUCCESS", "")
-PHOTO_BONUS_FAIL    = os.getenv("PHOTO_BONUS_FAIL", "")
-PHOTO_STATS         = os.getenv("PHOTO_STATS", "")
-PHOTO_TOP           = os.getenv("PHOTO_TOP", "")
-PHOTO_WINSTOP       = os.getenv("PHOTO_WINSTOP", "")
-PHOTO_REFTOP        = os.getenv("PHOTO_REFTOP", "")
+PHOTO_BONUS_SUCCESS = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_28_35%20PM.png"
+PHOTO_BONUS_FAIL    = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_35_56%20PM.png"
+PHOTO_STATS         = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_38_59%20PM.png"
+PHOTO_TOP           = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_41_22%20PM.png"
+PHOTO_WINSTOP       = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_42_56%20PM.png"
+PHOTO_REFTOP        = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_44_07%20PM.png"
 
 logger = logging.getLogger(__name__)
 
@@ -1154,7 +1153,7 @@ async def cmd_stats(message: Message) -> None:
         f"👥 Валидных рефералов: {valid_refs}"
     )
     if PHOTO_STATS:
-        await message.reply_photo(photo=PHOTO_STATS, caption=text)
+        await message.reply_photo(photo=URLInputFile(PHOTO_STATS), caption=text)
     else:
         await message.reply(text)
 
@@ -1176,7 +1175,7 @@ async def cmd_top(message: Message) -> None:
     for i, (name, chance, count) in enumerate(top, start=1):
         text += f"{i}. {name} — {chance:.3f}% ({count} сообщ.)\n"
     if PHOTO_TOP:
-        await message.reply_photo(photo=PHOTO_TOP, caption=text)
+        await message.reply_photo(photo=URLInputFile(PHOTO_TOP), caption=text)
     else:
         await message.reply(text)
 
@@ -1201,7 +1200,7 @@ async def cmd_winstop(message: Message) -> None:
     for i, (name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} поб.\n"
     if PHOTO_WINSTOP:
-        await message.reply_photo(photo=PHOTO_WINSTOP, caption=text)
+        await message.reply_photo(photo=URLInputFile(PHOTO_WINSTOP), caption=text)
     else:
         await message.reply(text)
 
@@ -1226,7 +1225,7 @@ async def cmd_reftop(message: Message) -> None:
     for i, (_, name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} реф.\n"
     if PHOTO_REFTOP:
-        await message.reply_photo(photo=PHOTO_REFTOP, caption=text)
+        await message.reply_photo(photo=URLInputFile(PHOTO_REFTOP), caption=text)
     else:
         await message.reply(text)
 
@@ -1252,7 +1251,7 @@ async def cmd_bonus(message: Message) -> None:
         mins_left  = int((BONUS_COOLDOWN - (now - last_bonus)) % 3600 // 60)
         text = f"⏳ Бонус уже получен.\nСледующий через: {hours_left} ч. {mins_left} мин."
         if PHOTO_BONUS_FAIL:
-            await message.reply_photo(photo=PHOTO_BONUS_FAIL, caption=text)
+            await message.reply_photo(photo=URLInputFile(PHOTO_BONUS_FAIL), caption=text)
         else:
             await message.reply(text)
         return
@@ -1261,7 +1260,7 @@ async def cmd_bonus(message: Message) -> None:
     await db.update_user(user_id, message.chat.id, name, new_chance, msg_count, now)
     text = f"🎁 Бонус: +{bonus_amount:.3f}%\n📈 Новый шанс: {new_chance:.3f}%"
     if PHOTO_BONUS_SUCCESS:
-        await message.reply_photo(photo=PHOTO_BONUS_SUCCESS, caption=text)
+        await message.reply_photo(photo=URLInputFile(PHOTO_BONUS_SUCCESS), caption=text)
     else:
         await message.reply(text)
 
