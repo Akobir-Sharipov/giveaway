@@ -8,7 +8,6 @@ import aiosqlite
 import pytz
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
-    URLInputFile,
     Message,
     ChatMemberUpdated,
     LabeledPrice,
@@ -61,32 +60,10 @@ REF_GIFT_IDS = {
          "5170521118301225164"],
 }
 
-# =========================
-# PHOTOS (file_id из Telegram)
-# Загрузи каждое фото боту в личку командой /getfileid
-# и вставь полученный file_id сюда
-# =========================
-PHOTO_BONUS_SUCCESS = os.getenv("PHOTO_BONUS_SUCCESS", "")   # /bonus — успешно
-PHOTO_BONUS_FAIL    = os.getenv("PHOTO_BONUS_FAIL", "")      # /bonus — ещё не время
-PHOTO_STATS         = os.getenv("PHOTO_STATS", "")           # /stats
-PHOTO_TOP           = os.getenv("PHOTO_TOP", "")             # /top
-PHOTO_WINSTOP       = os.getenv("PHOTO_WINSTOP", "")         # /winstop
-PHOTO_REFTOP        = os.getenv("PHOTO_REFTOP", "")          # /reftop
-
 WIN_GIFT_IDS = [
     "5170233102089322756",
-    "5170145012310081615",
+    "5170145012310081615",  # <- сюда вставь второй ID подарка
 ]
-
-# =========================
-# PHOTOS
-# =========================
-PHOTO_BONUS_SUCCESS = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_28_35%20PM.png"
-PHOTO_BONUS_FAIL    = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_35_56%20PM.png"
-PHOTO_STATS         = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_38_59%20PM.png"
-PHOTO_TOP           = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_41_22%20PM.png"
-PHOTO_WINSTOP       = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_42_56%20PM.png"
-PHOTO_REFTOP        = "https://raw.githubusercontent.com/Akobir-Sharipov/giveaway/refs/heads/main/images/ChatGPT%20Image%20Aug%209%2C%202026%2C%2009_44_07%20PM.png"
 
 logger = logging.getLogger(__name__)
 
@@ -193,30 +170,6 @@ class Database:
                 "SELECT 1 FROM banned_users WHERE user_id=?", (user_id,)
             ) as cur:
                 return await cur.fetchone() is not None
-
-    async def get_ban_reason(self, user_id: int) -> str:
-        async with aiosqlite.connect(self.path) as db:
-            async with db.execute(
-                "SELECT reason FROM banned_users WHERE user_id=?", (user_id,)
-            ) as cur:
-                row = await cur.fetchone()
-        return row[0] if row and row[0] else ""
-
-    async def get_ban_reason(self, user_id: int) -> str:
-        async with aiosqlite.connect(self.path) as db:
-            async with db.execute(
-                "SELECT reason FROM banned_users WHERE user_id=?", (user_id,)
-            ) as cur:
-                row = await cur.fetchone()
-        return row[0] if row and row[0] else ""
-
-    async def get_ban_reason(self, user_id: int) -> str:
-        async with aiosqlite.connect(self.path) as db:
-            async with db.execute(
-                "SELECT reason FROM banned_users WHERE user_id=?", (user_id,)
-            ) as cur:
-                row = await cur.fetchone()
-        return row[0] if row and row[0] else ""
 
     async def get_ban_list(self) -> list[tuple]:
         async with aiosqlite.connect(self.path) as db:
@@ -686,20 +639,6 @@ async def cmd_say(message: Message, bot: Bot) -> None:
         await message.answer(f"❌ Не удалось отправить сообщение.\n\n📛 {e}")
 
 # =========================
-# PRIVATE — получение file_id фото (только для админа)
-# =========================
-
-@router.message(F.photo | F.document, F.chat.type == "private")
-async def get_file_id(message: Message) -> None:
-    if message.from_user.id != ADMIN_ID:
-        return
-    if message.photo:
-        file_id = message.photo[-1].file_id
-    else:
-        file_id = message.document.file_id
-    await message.answer(f"📎 File ID:\n<code>{file_id}</code>", parse_mode="HTML")
-
-# =========================
 # PRIVATE — /vip (только для админа)
 # =========================
 
@@ -1137,25 +1076,19 @@ async def cmd_stats(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        reason = await db.get_ban_reason(message.from_user.id)
-        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
-        await message.reply(text)
+        await message.reply(BAN_MESSAGE)
         return
     user_id = message.from_user.id
     chance, msg_count, _ = await db.get_user(user_id, message.chat.id)
     wins = await db.get_wins_count(user_id, message.chat.id)
     valid_refs = await db.count_valid_refs(user_id)
-    text = (
+    await message.reply(
         f"📊 Статистика:\n\n"
         f"📈 Шанс: {chance:.3f}%\n"
         f"💬 Сообщений: {msg_count}\n"
         f"🏆 Побед за всё время: {wins}\n"
         f"👥 Валидных рефералов: {valid_refs}"
     )
-    if PHOTO_STATS:
-        await message.reply_photo(photo=URLInputFile(PHOTO_STATS), caption=text)
-    else:
-        await message.reply(text)
 
 # =========================
 # GROUP — /top
@@ -1166,18 +1099,13 @@ async def cmd_top(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        reason = await db.get_ban_reason(message.from_user.id)
-        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
-        await message.reply(text)
+        await message.reply(BAN_MESSAGE)
         return
     top  = await db.get_top(message.chat.id)
     text = "🏆 Топ участников:\n\n"
     for i, (name, chance, count) in enumerate(top, start=1):
         text += f"{i}. {name} — {chance:.3f}% ({count} сообщ.)\n"
-    if PHOTO_TOP:
-        await message.reply_photo(photo=URLInputFile(PHOTO_TOP), caption=text)
-    else:
-        await message.reply(text)
+    await message.reply(text)
 
 # =========================
 # GROUP — /winstop
@@ -1188,9 +1116,7 @@ async def cmd_winstop(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        reason = await db.get_ban_reason(message.from_user.id)
-        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
-        await message.reply(text)
+        await message.reply(BAN_MESSAGE)
         return
     top = await db.get_wins_top(message.chat.id)
     if not top:
@@ -1199,10 +1125,7 @@ async def cmd_winstop(message: Message) -> None:
     text = "🏆 Топ победителей за всё время:\n\n"
     for i, (name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} поб.\n"
-    if PHOTO_WINSTOP:
-        await message.reply_photo(photo=URLInputFile(PHOTO_WINSTOP), caption=text)
-    else:
-        await message.reply(text)
+    await message.reply(text)
 
 # =========================
 # GROUP — /reftop
@@ -1213,9 +1136,7 @@ async def cmd_reftop(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        reason = await db.get_ban_reason(message.from_user.id)
-        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
-        await message.reply(text)
+        await message.reply(BAN_MESSAGE)
         return
     top = await db.get_refs_top()
     if not top:
@@ -1224,10 +1145,7 @@ async def cmd_reftop(message: Message) -> None:
     text = "👥 Топ по рефералам за всё время:\n\n"
     for i, (_, name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} реф.\n"
-    if PHOTO_REFTOP:
-        await message.reply_photo(photo=URLInputFile(PHOTO_REFTOP), caption=text)
-    else:
-        await message.reply(text)
+    await message.reply(text)
 
 # =========================
 # GROUP — /bonus
@@ -1238,9 +1156,7 @@ async def cmd_bonus(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
-        reason = await db.get_ban_reason(message.from_user.id)
-        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
-        await message.reply(text)
+        await message.reply(BAN_MESSAGE)
         return
     user_id = message.from_user.id
     name    = display_name(message.from_user)
@@ -1249,20 +1165,12 @@ async def cmd_bonus(message: Message) -> None:
     if now - last_bonus < BONUS_COOLDOWN:
         hours_left = int((BONUS_COOLDOWN - (now - last_bonus)) // 3600)
         mins_left  = int((BONUS_COOLDOWN - (now - last_bonus)) % 3600 // 60)
-        text = f"⏳ Бонус уже получен.\nСледующий через: {hours_left} ч. {mins_left} мин."
-        if PHOTO_BONUS_FAIL:
-            await message.reply_photo(photo=URLInputFile(PHOTO_BONUS_FAIL), caption=text)
-        else:
-            await message.reply(text)
+        await message.reply(f"⏳ Бонус уже получен.\nСледующий через: {hours_left} ч. {mins_left} мин.")
         return
     bonus_amount = round(random.uniform(0.05, 0.20), 3)
     new_chance   = min(round(chance + bonus_amount, 3), MAX_CHANCE)
     await db.update_user(user_id, message.chat.id, name, new_chance, msg_count, now)
-    text = f"🎁 Бонус: +{bonus_amount:.3f}%\n📈 Новый шанс: {new_chance:.3f}%"
-    if PHOTO_BONUS_SUCCESS:
-        await message.reply_photo(photo=URLInputFile(PHOTO_BONUS_SUCCESS), caption=text)
-    else:
-        await message.reply(text)
+    await message.reply(f"🎁 Бонус: +{bonus_amount:.3f}%\n📈 Новый шанс: {new_chance:.3f}%")
 
 # =========================
 # GROUP — /daytop
@@ -1336,7 +1244,7 @@ async def group_handler(message: Message, bot: Bot) -> None:
                 logger.warning("leave_chat failed: %s", e)
         return
 
-   msg_text = message.text or message.caption
+    msg_text = message.text or message.caption
     if not msg_text or msg_text.startswith("/"):
         return
 
@@ -1352,16 +1260,12 @@ async def group_handler(message: Message, bot: Bot) -> None:
     cache_key = (user_id, message.chat.id)
 
     if await db.is_banned(user_id):
-        reason = await db.get_ban_reason(user_id)
-        text = BAN_MESSAGE + (f"\n\n📝 Причина: {reason}" if reason else "")
-        await message.reply(text)
         return
 
     if cache_key in cooldowns:
         return
     cooldowns[cache_key] = True
 
-    # Дневная статистика
     await db.increment_daily(user_id, message.chat.id, name)
 
     chance, msg_count, last_bonus = await db.get_user(user_id, message.chat.id)
@@ -1403,7 +1307,7 @@ async def group_handler(message: Message, bot: Bot) -> None:
         try:
             star_balance = await bot.get_my_star_balance()
             if star_balance.amount < 15:
-                await db.add_pending_gift(user_id, name, random.choice(WIN_GIFT_IDS), "победа")
+                await db.add_pending_gift(user_id, name, "5170233102089322756", "победа")
                 await send_log(bot, f"⚠️ Недостаточно звёзд!\n\nБаланс: {star_balance.amount}⭐\nПобедитель: {name} ({user_id})\nДобавлен в /pending")
                 await bot.send_message(ADMIN_ID,
                     f"⚠️ Недостаточно звёзд!\n\n💫 Баланс: {star_balance.amount}⭐\n👤 {name} ({user_id})\n\nПодарок добавлен в /pending"
