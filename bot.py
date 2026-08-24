@@ -1336,15 +1336,19 @@ async def group_handler(message: Message, bot: Bot) -> None:
                 logger.warning("leave_chat failed: %s", e)
         return
 
-    if not message.from_user or message.from_user.is_bot:
-        return
-
-    msg_text = message.text or message.caption
+   msg_text = message.text or message.caption
     if not msg_text or msg_text.startswith("/"):
         return
 
-    user_id   = message.from_user.id
-    name      = display_name(message.from_user)
+    if message.from_user and not message.from_user.is_bot:
+        user_id = message.from_user.id
+        name = display_name(message.from_user)
+    elif message.sender_chat:
+        user_id = message.sender_chat.id
+        name = message.sender_chat.title or str(message.sender_chat.id)
+    else:
+        return
+
     cache_key = (user_id, message.chat.id)
 
     if await db.is_banned(user_id):
