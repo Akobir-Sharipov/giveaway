@@ -926,6 +926,8 @@ def start_keyboard():
     buttons = [
         [InlineKeyboardButton(text="🔗 Реферальная ссылка", callback_data="ref")],
         [InlineKeyboardButton(text="📊 Реферальная статистика", callback_data="refstats")],
+        [InlineKeyboardButton(text="📦 Кейсы", callback_data="cases")],
+        [InlineKeyboardButton(text="❓ Как играть", callback_data="help")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -966,6 +968,34 @@ async def ref_callback(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data == "refstats")
 async def refstats_callback(callback: CallbackQuery):
     await cmd_refstats(callback.message)
+    await callback.answer()
+
+async def send_help(message: Message) -> None:
+    await message.answer(
+        "❓ Как играть\n\n"
+        "🪙 Пиши сообщения в основной группе и получай DC.\n"
+        "🎁 /bonus — ежедневный бонус.\n"
+        "📦 /cases — открыть кейс KARAPUZ за 1 000 DC или за ключ.\n"
+        "🎟 /promo КОД — активировать промокод на DC или ключ кейса.\n"
+        "💱 /exchange — обменять DC на шанс или подарки.\n"
+        "🎰 /slots, /roulette, /dice — казино только в личке с ботом.\n"
+        "💸 /transfer — перевести DC другому игроку.\n\n"
+        "📊 /stats — твоя статистика.\n"
+        "🪙 /coins — твой баланс."
+    )
+
+@router.message(Command("help"))
+async def cmd_help(message: Message) -> None:
+    if message.chat.type != "private" and message.chat.id != MAIN_CHAT_ID:
+        return
+    if message.from_user and await db.is_banned(message.from_user.id):
+        await message.reply(BAN_MESSAGE)
+        return
+    await send_help(message)
+
+@router.callback_query(F.data == "help")
+async def help_callback(callback: CallbackQuery) -> None:
+    await send_help(callback.message)
     await callback.answer()
 
 # =========================
@@ -1815,8 +1845,11 @@ async def cmd_cases(message: Message) -> None:
     if await db.is_banned(message.from_user.id):
         await message.answer(BAN_MESSAGE)
         return
+    await send_cases_menu(message, message.from_user.id)
+
+async def send_cases_menu(message: Message, user_id: int) -> None:
     case = CASES["karapuz"]
-    keys = await db.get_case_keys(message.from_user.id, "karapuz")
+    keys = await db.get_case_keys(user_id, "karapuz")
     rewards_text = "\n".join(f"• {reward:,} DC — {chance}%".replace(",", " ") for reward, chance in case["rewards"])
     await message.answer(
         f"📦 Кейс {case['title']}\n\n"
@@ -1825,6 +1858,14 @@ async def cmd_cases(message: Message) -> None:
         f"🎁 Возможные награды:\n{rewards_text}",
         reply_markup=cases_keyboard(),
     )
+
+@router.callback_query(F.data == "cases")
+async def cases_callback(callback: CallbackQuery) -> None:
+    if await db.is_banned(callback.from_user.id):
+        await callback.answer(BAN_MESSAGE, show_alert=True)
+        return
+    await send_cases_menu(callback.message, callback.from_user.id)
+    await callback.answer()
 
 @router.callback_query(F.data == "case_open_karapuz")
 async def open_karapuz_case(callback: CallbackQuery) -> None:
