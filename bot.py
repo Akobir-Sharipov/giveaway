@@ -972,9 +972,15 @@ def exchange_keyboard(balance: int):
 
 def cases_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦 KARAPUZ — 1 000 DC", callback_data="case_open_karapuz")],
-        [InlineKeyboardButton(text="🩸 BLOOD — 5 000 DC", callback_data="case_open_blood")],
-        [InlineKeyboardButton(text="🐆 PANTERA — 10 000 DC", callback_data="case_open_pantera")],
+        [InlineKeyboardButton(text="📦 KARAPUZ — 1 000 DC", callback_data="case_view_karapuz")],
+        [InlineKeyboardButton(text="🩸 BLOOD — 5 000 DC", callback_data="case_view_blood")],
+        [InlineKeyboardButton(text="🐆 PANTERA — 10 000 DC", callback_data="case_view_pantera")],
+    ])
+
+def case_detail_keyboard(case_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎁 Открыть кейс", callback_data=f"case_open_{case_id}")],
+        [InlineKeyboardButton(text="⬅️ Все кейсы", callback_data="cases")],
     ])
 
 # =========================
@@ -1878,35 +1884,46 @@ async def cmd_cases(message: Message) -> None:
     await send_cases_menu(message, message.from_user.id)
 
 async def send_cases_menu(message: Message, user_id: int) -> None:
-    blocks = []
-    for case_id, case in CASES.items():
-        keys = await db.get_case_keys(user_id, case_id)
-        rewards = []
-        for reward in case["rewards"]:
-            if isinstance(reward[0], str):
-                kind, value, _ = reward
-                label = f"🎁 Подарок {value}⭐" if kind == "gift" else f"{value:,} DC".replace(",", " ")
-            else:
-                value, _ = reward
-                label = f"{value:,} DC".replace(",", " ")
-            rewards.append(f"• {label}")
-        blocks.append(
-            f"📦 Кейс {case['title']}\n"
-            f"💰 Цена: {case['price']:,} DC\n"
-            f"🔑 Твоих ключей: {keys}\n"
-            f"🎁 Возможные награды:\n" + "\n".join(rewards)
-        )
     await message.answer(
-        "\n\n".join(blocks),
+        "📦 Выбери кейс:",
         reply_markup=cases_keyboard(),
     )
+
+async def show_case(callback: CallbackQuery, case_id: str) -> None:
+    case = CASES[case_id]
+    keys = await db.get_case_keys(callback.from_user.id, case_id)
+    rewards = []
+    for reward in case["rewards"]:
+        if isinstance(reward[0], str):
+            kind, value, _ = reward
+            label = f"🎁 Подарок {value}⭐" if kind == "gift" else f"{value:,} DC".replace(",", " ")
+        else:
+            value, _ = reward
+            label = f"{value:,} DC".replace(",", " ")
+        rewards.append(f"• {label}")
+    await callback.message.edit_text(
+        f"📦 Кейс {case['title']}\n\n"
+        f"💰 Цена: {case['price']:,} DC\n"
+        f"🔑 Твоих ключей: {keys}\n\n"
+        f"🎁 Возможные награды:\n" + "\n".join(rewards),
+        reply_markup=case_detail_keyboard(case_id),
+    )
+
+@router.callback_query(F.data.startswith("case_view_"))
+async def case_view_callback(callback: CallbackQuery) -> None:
+    case_id = callback.data.removeprefix("case_view_")
+    if case_id not in CASES:
+        await callback.answer("Кейс не найден", show_alert=True)
+        return
+    await show_case(callback, case_id)
+    await callback.answer()
 
 @router.callback_query(F.data == "cases")
 async def cases_callback(callback: CallbackQuery) -> None:
     if await db.is_banned(callback.from_user.id):
         await callback.answer(BAN_MESSAGE, show_alert=True)
         return
-    await send_cases_menu(callback.message, callback.from_user.id)
+    await callback.message.edit_text("📦 Выбери кейс:", reply_markup=cases_keyboard())
     await callback.answer()
 
 async def open_case(callback: CallbackQuery, bot: Bot, case_id: str) -> None:
@@ -1956,7 +1973,7 @@ async def open_case(callback: CallbackQuery, bot: Bot, case_id: str) -> None:
     ).replace(",", " ")
     await callback.message.edit_text(
         result_text,
-        reply_markup=cases_keyboard(),
+        reply_markup=case_detail_keyboard(case_id),
     )
     await send_game_log(
         bot,
