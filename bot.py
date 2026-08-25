@@ -572,15 +572,28 @@ class Database:
         return row[0] if row else COINS_START
 
     async def remove_coins(self, user_id: int, amount: int) -> bool:
-        balance, _ = await self.get_coins(user_id)
-        if balance < amount:
+        if amount <= 0:
             return False
         async with aiosqlite.connect(self.path) as db:
-            await db.execute(
-                "UPDATE coins SET balance = balance - ? WHERE user_id=?", (amount, user_id)
-            )
-            await db.commit()
-        return True
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await db.execute(
+                    "INSERT OR IGNORE INTO coins (user_id, balance) VALUES (?, ?)",
+                    (user_id, COINS_START),
+                )
+                cursor = await db.execute(
+                    "UPDATE coins SET balance = balance - ? "
+                    "WHERE user_id = ? AND balance >= ?",
+                    (amount, user_id, amount),
+                )
+                if cursor.rowcount != 1:
+                    await db.rollback()
+                    return False
+                await db.commit()
+                return True
+            except Exception:
+                await db.rollback()
+                raise
 
     async def set_coin_bonus_time(self, user_id: int) -> None:
         async with aiosqlite.connect(self.path) as db:
@@ -1031,6 +1044,9 @@ async def cmd_addcoins(message: Message) -> None:
     except ValueError:
         await message.answer("❌ Укажи числовой ID и количество.")
         return
+    if amount <= 0:
+        await message.answer("❌ Количество должно быть положительным.")
+        return
     new_balance = await db.add_coins(user_id, amount)
     name = await db.get_user_name(user_id)
     await message.answer(f"✅ Добавлено {amount} DC\n👤 {name} ({user_id})\n🪙 Баланс: {new_balance} D-COINS")
@@ -1048,6 +1064,9 @@ async def cmd_removecoins(message: Message) -> None:
         amount  = int(args[2])
     except ValueError:
         await message.answer("❌ Укажи числовой ID и количество.")
+        return
+    if amount <= 0:
+        await message.answer("❌ Количество должно быть положительным.")
         return
     ok = await db.remove_coins(user_id, amount)
     name = await db.get_user_name(user_id)
@@ -1733,43 +1752,78 @@ async def process_exchange_gift(callback: CallbackQuery, cost: int, gift_key: in
     if balance < cost:
         await callback.answer(f"❌ Нужно {cost} DC, у тебя {balance}", show_alert=True)
         return
-    await db.remove_coins(user_id, cost)
-    name = await db.get_user_name(user_id)
-    new_balance, _ = await db.get_coins(user_id)
     gift_ids = REF_GIFT_IDS.get(gift_key, [])
     gift_id  = random.choice(gift_ids) if gift_ids else None
-    if gift_id:
+    if not gift_id:
+        logger.error("No gift IDs configured for exchange gift key %s", gift_key)
+        await callback.answer("❌ Этот подарок временно недоступен.", show_alert=True)
+        return
+
+    if not await db.remove_coins(user_id, cost):
+        balance, _ = await db.get_coins(user_id)
+        await callback.answer(f"❌ Нужно {cost} DC, у тебя {balance}", show_alert=True)
+        return
+
+    name = await db.get_user_name(user_id)
+    new_balance, _ = await db.get_coins(user_id)
+    pending_reason = f"обмен {cost} DC → {reward_label}"
+    try:
+        star_balance = await bot.get_my_star_balance()
+        stars_needed = int(reward_label.replace("⭐", "").strip())
+    except Exception as e:
+        logger.warning("Could not check star balance: %s", e)
+        await db.add_pending_gift(user_id, name, gift_id, f"{pending_reason} — не удалось проверить баланс")
+        await callback.message.edit_text(
+            f"✅ Обменял {cost} DC на подарок {reward_label}\n"
+            f"🪙 Баланс: {new_balance} DC\n"
+            f"⏳ Подарок будет отправлен позже.",
+            reply_markup=exchange_keyboard(new_balance),
+        )
+        await callback.answer()
+        return
+
+    if star_balance.amount < stars_needed:
+        await db.add_pending_gift(user_id, name, gift_id, pending_reason)
         try:
-            star_balance = await bot.get_my_star_balance()
-            stars_needed = int(reward_label.replace("⭐", "").strip())
-            if star_balance.amount < stars_needed:
-                await db.add_pending_gift(user_id, name, gift_id, f"обмен {cost} DC → {reward_label}")
-                await bot.send_message(ADMIN_ID,
-                    f"⚠️ Недостаточно звёзд!\n\n👤 {name} ({user_id})\n💫 {star_balance.amount}⭐\nДобавлен в /pending"
-                )
-                await callback.message.edit_text(
-                    f"✅ Обменял {cost} DC на подарок {reward_label}\n"
-                    f"🪙 Баланс: {new_balance} DC\n"
-                    f"⏳ Подарок будет отправлен как только пополним баланс.",
-                    reply_markup=exchange_keyboard(new_balance)
-                )
-            else:
-                await bot.send_gift(user_id=user_id, gift_id=gift_id)
-                await send_log(bot, f"🎁 Обмен монет\n\n{name} ({user_id})\n{cost} DC → {reward_label}")
-                await callback.message.edit_text(
-                    f"✅ Обменял {cost} DC на подарок {reward_label}\n"
-                    f"🪙 Баланс: {new_balance} DC\n"
-                    f"🎁 Подарок отправлен в личку!",
-                    reply_markup=exchange_keyboard(new_balance)
-                )
-        except Exception as e:
-            await db.add_pending_gift(user_id, name, gift_id, f"обмен {cost} DC → {reward_label} — ошибка: {e}")
-            await callback.message.edit_text(
-                f"✅ Обменял {cost} DC на подарок {reward_label}\n"
-                f"🪙 Баланс: {new_balance} DC\n"
-                f"⏳ Подарок будет отправлен позже.",
-                reply_markup=exchange_keyboard(new_balance)
+            await bot.send_message(
+                ADMIN_ID,
+                f"⚠️ Недостаточно звёзд!\n\n👤 {name} ({user_id})\n💫 {star_balance.amount}⭐\nДобавлен в /pending",
             )
+        except Exception as e:
+            logger.warning("Could not notify admin about pending gift: %s", e)
+        await callback.message.edit_text(
+            f"✅ Обменял {cost} DC на подарок {reward_label}\n"
+            f"🪙 Баланс: {new_balance} DC\n"
+            f"⏳ Подарок будет отправлен как только пополним баланс.",
+            reply_markup=exchange_keyboard(new_balance),
+        )
+        await callback.answer()
+        return
+
+    try:
+        await bot.send_gift(user_id=user_id, gift_id=gift_id)
+    except Exception as e:
+        logger.warning("Exchange gift failed: %s", e)
+        await db.add_pending_gift(user_id, name, gift_id, f"{pending_reason} — ошибка: {e}")
+        await callback.message.edit_text(
+            f"✅ Обменял {cost} DC на подарок {reward_label}\n"
+            f"🪙 Баланс: {new_balance} DC\n"
+            f"⏳ Подарок будет отправлен позже.",
+            reply_markup=exchange_keyboard(new_balance),
+        )
+        await callback.answer()
+        return
+
+    try:
+        await send_log(bot, f"🎁 Обмен монет\n\n{name} ({user_id})\n{cost} DC → {reward_label}")
+    except Exception as e:
+        logger.warning("Could not log exchange gift: %s", e)
+    await callback.message.edit_text(
+        f"✅ Обменял {cost} DC на подарок {reward_label}\n"
+        f"🪙 Баланс: {new_balance} DC\n"
+        f"🎁 Подарок отправлен в личку!",
+        reply_markup=exchange_keyboard(new_balance),
+    )
     await callback.answer()
 
 @router.callback_query(F.data == "exch_gift_15")
