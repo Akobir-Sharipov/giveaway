@@ -30,6 +30,7 @@ load_dotenv()
 TOKEN        = os.getenv("BOT_TOKEN", "")
 MAIN_CHAT_ID = int(os.getenv("MAIN_CHAT_ID", "0"))
 LOG_CHAT_ID  = int(os.getenv("LOG_CHAT_ID", "0"))
+GAME_LOG_CHAT_ID = int(os.getenv("GAME_LOG_CHAT_ID", "0"))
 ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
 
 COOLDOWN_SECONDS   = 1
@@ -69,6 +70,26 @@ CASES = {
         "rewards": [
             (100, 5), (150, 7), (300, 12), (500, 15), (600, 16),
             (700, 15), (800, 12), (900, 8), (1000, 5), (1500, 3), (3000, 2),
+        ],
+    },
+    "blood": {
+        "title": "BLOOD",
+        "price": 5000,
+        "rewards": [
+            ("coins", 300, 10), ("coins", 500, 12), ("coins", 700, 14),
+            ("coins", 1000, 16), ("coins", 1500, 17), ("coins", 2500, 14),
+            ("coins", 4000, 8), ("coins", 7000, 6),
+            ("gift", 15, 2), ("gift", 25, 0.7), ("gift", 50, 0.3),
+        ],
+    },
+    "pantera": {
+        "title": "PANTERA",
+        "price": 10000,
+        "rewards": [
+            ("coins", 1000, 16), ("coins", 5000, 21), ("coins", 6000, 21),
+            ("coins", 8000, 18), ("coins", 9000, 13), ("coins", 12000, 6),
+            ("coins", 15000, 3), ("gift", 15, 1), ("gift", 25, 0.5),
+            ("gift", 50, 0.3), ("gift", 100, 0.2),
         ],
     },
 }
@@ -813,6 +834,14 @@ async def send_log(bot: Bot, text: str) -> None:
     except Exception as e:
         logger.warning("send_log failed: %s", e)
 
+async def send_game_log(bot: Bot, text: str) -> None:
+    if not GAME_LOG_CHAT_ID:
+        return
+    try:
+        await bot.send_message(GAME_LOG_CHAT_ID, text)
+    except Exception as e:
+        logger.warning("send_game_log failed: %s", e)
+
 
 async def reward_inviter(bot: Bot, inviter_id: int) -> None:
     inv_chance, inv_msgs, inv_bonus = await db.get_user(inviter_id, MAIN_CHAT_ID)
@@ -944,6 +973,8 @@ def exchange_keyboard(balance: int):
 def cases_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 KARAPUZ — 1 000 DC", callback_data="case_open_karapuz")],
+        [InlineKeyboardButton(text="🩸 BLOOD — 5 000 DC", callback_data="case_open_blood")],
+        [InlineKeyboardButton(text="🐆 PANTERA — 10 000 DC", callback_data="case_open_pantera")],
     ])
 
 # =========================
@@ -1847,14 +1878,26 @@ async def cmd_cases(message: Message) -> None:
     await send_cases_menu(message, message.from_user.id)
 
 async def send_cases_menu(message: Message, user_id: int) -> None:
-    case = CASES["karapuz"]
-    keys = await db.get_case_keys(user_id, "karapuz")
-    rewards_text = "\n".join(f"• {reward:,} DC — {chance}%".replace(",", " ") for reward, chance in case["rewards"])
+    blocks = []
+    for case_id, case in CASES.items():
+        keys = await db.get_case_keys(user_id, case_id)
+        rewards = []
+        for reward in case["rewards"]:
+            if isinstance(reward[0], str):
+                kind, value, _ = reward
+                label = f"🎁 Подарок {value}⭐" if kind == "gift" else f"{value:,} DC".replace(",", " ")
+            else:
+                value, _ = reward
+                label = f"{value:,} DC".replace(",", " ")
+            rewards.append(f"• {label}")
+        blocks.append(
+            f"📦 Кейс {case['title']}\n"
+            f"💰 Цена: {case['price']:,} DC\n"
+            f"🔑 Твоих ключей: {keys}\n"
+            f"🎁 Возможные награды:\n" + "\n".join(rewards)
+        )
     await message.answer(
-        f"📦 Кейс {case['title']}\n\n"
-        f"💰 Цена: {case['price']:,} DC\n"
-        f"🔑 Твоих ключей: {keys}\n\n"
-        f"🎁 Возможные награды:\n{rewards_text}",
+        "\n\n".join(blocks),
         reply_markup=cases_keyboard(),
     )
 
@@ -1866,8 +1909,7 @@ async def cases_callback(callback: CallbackQuery) -> None:
     await send_cases_menu(callback.message, callback.from_user.id)
     await callback.answer()
 
-@router.callback_query(F.data == "case_open_karapuz")
-async def open_karapuz_case(callback: CallbackQuery) -> None:
+async def open_case(callback: CallbackQuery, bot: Bot, case_id: str) -> None:
     user_id = callback.from_user.id
     if await db.is_banned(user_id):
         await callback.answer(BAN_MESSAGE, show_alert=True)
@@ -1876,23 +1918,38 @@ async def open_karapuz_case(callback: CallbackQuery) -> None:
         await callback.answer(f"⏳ Следующее открытие через {CASE_OPEN_COOLDOWN} сек.", show_alert=True)
         return
 
-    case = CASES["karapuz"]
+    case = CASES[case_id]
     case_open_cooldowns[user_id] = True
-    payment = await db.open_case(user_id, "karapuz", case["price"])
+    payment = await db.open_case(user_id, case_id, case["price"])
     if payment == "insufficient":
         case_open_cooldowns.pop(user_id, None)
         balance, _ = await db.get_coins(user_id)
         await callback.answer(f"❌ Нужно {case['price']} DC, у тебя {balance}", show_alert=True)
         return
 
-    rewards, weights = zip(*case["rewards"])
-    reward = random.choices(rewards, weights=weights, k=1)[0]
-    new_balance = await db.add_coins(user_id, reward)
-    keys = await db.get_case_keys(user_id, "karapuz")
+    if isinstance(case["rewards"][0][0], str):
+        kind, reward, _ = random.choices(case["rewards"], weights=[item[2] for item in case["rewards"]], k=1)[0]
+    else:
+        reward, _ = random.choices(case["rewards"], weights=[item[1] for item in case["rewards"]], k=1)[0]
+        kind = "coins"
+    if kind == "coins":
+        new_balance = await db.add_coins(user_id, reward)
+        prize_text = f"🎉 Выпало: {reward:,} DC".replace(",", " ")
+    else:
+        gift_key = {15: 5, 25: 10, 50: 15, 100: 20}[reward]
+        gift_id = random.choice(REF_GIFT_IDS[gift_key])
+        try:
+            await bot.send_gift(user_id=user_id, gift_id=gift_id)
+            prize_text = f"🎁 Выпал подарок {reward}⭐\n✅ Подарок отправлен в личку!"
+        except Exception as e:
+            await db.add_pending_gift(user_id, await db.get_user_name(user_id), gift_id, f"кейс {case['title']}: {e}")
+            prize_text = f"🎁 Выпал подарок {reward}⭐\n⏳ Добавлен в очередь выдачи."
+        new_balance, _ = await db.get_coins(user_id)
+    keys = await db.get_case_keys(user_id, case_id)
     payment_text = "🔑 Использован ключ кейса" if payment == "key" else f"💸 Списано: {case['price']:,} DC".replace(",", " ")
     result_text = (
         f"📦 {case['title']} открыт!\n\n"
-        f"🎉 Выпало: {reward:,} DC\n"
+        f"{prize_text}\n"
         f"{payment_text}\n"
         f"🪙 Баланс: {new_balance:,} DC\n"
         f"🔑 Ключей: {keys}"
@@ -1901,14 +1958,33 @@ async def open_karapuz_case(callback: CallbackQuery) -> None:
         result_text,
         reply_markup=cases_keyboard(),
     )
+    await send_game_log(
+        bot,
+        f"📦 Открыт кейс {case['title']}\n"
+        f"👤 {display_name(callback.from_user)} ({user_id})\n"
+        f"{payment_text}\n{prize_text}\n"
+        f"🪙 Баланс: {new_balance:,} DC".replace(",", " "),
+    )
     await callback.answer()
+
+@router.callback_query(F.data == "case_open_karapuz")
+async def open_karapuz_case(callback: CallbackQuery, bot: Bot) -> None:
+    await open_case(callback, bot, "karapuz")
+
+@router.callback_query(F.data == "case_open_blood")
+async def open_blood_case(callback: CallbackQuery, bot: Bot) -> None:
+    await open_case(callback, bot, "blood")
+
+@router.callback_query(F.data == "case_open_pantera")
+async def open_pantera_case(callback: CallbackQuery, bot: Bot) -> None:
+    await open_case(callback, bot, "pantera")
 
 # =========================
 # GROUP — CASINO
 # =========================
 
 @router.message(Command("slots"))
-async def cmd_slots(message: Message) -> None:
+async def cmd_slots(message: Message, bot: Bot) -> None:
     if message.chat.type != "private":
         return
     if await db.is_banned(message.from_user.id):
@@ -1964,6 +2040,7 @@ async def cmd_slots(message: Message) -> None:
             f"🏆 Выигрыш: {win} DC\n"
             f"🪙 Баланс: {new_balance} DC"
         )
+        await send_game_log(bot, f"🎰 Слоты\n👤 {display_name(message.from_user)} ({user_id})\n💸 Ставка: {bet} DC\n✅ Выигрыш: {win} DC\n🪙 Баланс: {new_balance} DC")
     else:
         await message.reply(
             f"🎰 {s1} {s2} {s3}\n\n"
@@ -1971,10 +2048,11 @@ async def cmd_slots(message: Message) -> None:
             f"💸 Ставка: {bet} DC\n"
             f"🪙 Баланс: {balance_after} DC"
         )
+        await send_game_log(bot, f"🎰 Слоты\n👤 {display_name(message.from_user)} ({user_id})\n💸 Ставка: {bet} DC\n❌ Проигрыш\n🪙 Баланс: {balance_after} DC")
 
 
 @router.message(Command("roulette"))
-async def cmd_roulette(message: Message) -> None:
+async def cmd_roulette(message: Message, bot: Bot) -> None:
     if message.chat.type != "private":
         return
     if await db.is_banned(message.from_user.id):
@@ -2035,6 +2113,7 @@ async def cmd_roulette(message: Message) -> None:
             f"🏆 Выигрыш: {win} DC\n"
             f"🪙 Баланс: {new_balance} DC"
         )
+        await send_game_log(bot, f"🎡 Рулетка\n👤 {display_name(message.from_user)} ({user_id})\n💸 Ставка: {bet} DC на {chosen_emoji}\nВыпало: {result_emoji}\n✅ Выигрыш: {win} DC\n🪙 Баланс: {new_balance} DC")
     else:
         new_balance, _ = await db.get_coins(user_id)
         await message.reply(
@@ -2043,10 +2122,11 @@ async def cmd_roulette(message: Message) -> None:
             f"💸 Ставка: {bet} DC на {chosen_emoji}\n"
             f"🪙 Баланс: {new_balance} DC"
         )
+        await send_game_log(bot, f"🎡 Рулетка\n👤 {display_name(message.from_user)} ({user_id})\n💸 Ставка: {bet} DC на {chosen_emoji}\nВыпало: {result_emoji}\n❌ Проигрыш\n🪙 Баланс: {new_balance} DC")
 
 
 @router.message(Command("dice"))
-async def cmd_dice(message: Message) -> None:
+async def cmd_dice(message: Message, bot: Bot) -> None:
     if message.chat.type != "private":
         return
     if await db.is_banned(message.from_user.id):
@@ -2104,6 +2184,7 @@ async def cmd_dice(message: Message) -> None:
             f"🏆 Выигрыш: {win} DC\n"
             f"🪙 Баланс: {new_balance} DC"
         )
+        await send_game_log(bot, f"🎲 Кубик\n👤 {display_name(message.from_user)} ({user_id})\n💸 Ставка: {bet} DC на {number}\nВыпало: {rolled}\n✅ Выигрыш: {win} DC\n🪙 Баланс: {new_balance} DC")
     else:
         new_balance, _ = await db.get_coins(user_id)
         await message.reply(
@@ -2112,6 +2193,7 @@ async def cmd_dice(message: Message) -> None:
             f"💸 Ставка: {bet} DC\n"
             f"🪙 Баланс: {new_balance} DC"
         )
+        await send_game_log(bot, f"🎲 Кубик\n👤 {display_name(message.from_user)} ({user_id})\n💸 Ставка: {bet} DC на {number}\nВыпало: {rolled}\n❌ Проигрыш\n🪙 Баланс: {new_balance} DC")
 
 
 # =========================
