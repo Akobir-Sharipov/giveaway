@@ -53,11 +53,11 @@ CASINO_MIN_BET     = 5
 CASINO_TIMEOUT     = 300  # 5 минут
 
 # Обмен
-EXCHANGE_CHANCE    = 500   # 500 DC = +1% шанса
-EXCHANGE_GIFT_15   = 750
-EXCHANGE_GIFT_25   = 900
-EXCHANGE_GIFT_50   = 1200
-EXCHANGE_GIFT_100  = 1500
+EXCHANGE_CHANCE    = 1000  # 1 000 DC = +1% шанса
+EXCHANGE_GIFT_15   = 1500
+EXCHANGE_GIFT_25   = 2000
+EXCHANGE_GIFT_50   = 3000
+EXCHANGE_GIFT_100  = 5000
 
 BAN_MESSAGE = "🚫 Вы заблокированы и не можете участвовать в розыгрышах в боте."
 
@@ -733,11 +733,11 @@ def start_keyboard():
 
 def exchange_keyboard(balance: int):
     buttons = [
-        [InlineKeyboardButton(text=f"📈 500 DC → +1% шанса", callback_data="exch_chance")],
-        [InlineKeyboardButton(text=f"🎁 750 DC → подарок 15⭐", callback_data="exch_gift_15")],
-        [InlineKeyboardButton(text=f"🎁 900 DC → подарок 25⭐", callback_data="exch_gift_25")],
-        [InlineKeyboardButton(text=f"🎁 1200 DC → подарок 50⭐", callback_data="exch_gift_50")],
-        [InlineKeyboardButton(text=f"🎁 1500 DC → подарок 100⭐", callback_data="exch_gift_100")],
+        [InlineKeyboardButton(text=f"📈 {EXCHANGE_CHANCE:,} DC → +1% шанса".replace(",", " "), callback_data="exch_chance")],
+        [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_15:,} DC → подарок 15⭐".replace(",", " "), callback_data="exch_gift_15")],
+        [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_25:,} DC → подарок 25⭐".replace(",", " "), callback_data="exch_gift_25")],
+        [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_50:,} DC → подарок 50⭐".replace(",", " "), callback_data="exch_gift_50")],
+        [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_100:,} DC → подарок 100⭐".replace(",", " "), callback_data="exch_gift_100")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
