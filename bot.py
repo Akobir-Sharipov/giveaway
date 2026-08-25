@@ -52,6 +52,7 @@ COINS_BONUS_CD     = 43200
 CASINO_MIN_BET     = 5
 CASINO_TIMEOUT     = 300  # 5 минут
 CASINO_BET_COOLDOWN = 10  # секунд между ставками одного пользователя
+CASE_OPEN_COOLDOWN = 5    # секунд между открытиями кейса
 
 # Обмен
 EXCHANGE_CHANCE    = 5000   # 5 000 DC = +1% шанса
@@ -59,6 +60,18 @@ EXCHANGE_GIFT_15   = 15000
 EXCHANGE_GIFT_25   = 25000
 EXCHANGE_GIFT_50   = 50000
 EXCHANGE_GIFT_100  = 100000
+
+# Кейсы
+CASES = {
+    "karapuz": {
+        "title": "KARAPUZ",
+        "price": 1000,
+        "rewards": [
+            (100, 5), (150, 7), (300, 12), (500, 15), (600, 16),
+            (700, 15), (800, 12), (900, 8), (1000, 5), (1500, 3), (3000, 2),
+        ],
+    },
+}
 
 BAN_MESSAGE = "🚫 Вы заблокированы и не можете участвовать в розыгрышах в боте."
 
@@ -186,6 +199,9 @@ class Database:
                 CREATE TABLE IF NOT EXISTS promo_codes (
                     code       TEXT PRIMARY KEY COLLATE NOCASE,
                     reward     INTEGER NOT NULL,
+                    reward_type TEXT NOT NULL DEFAULT 'coins',
+                    case_id    TEXT,
+                    case_count INTEGER,
                     max_uses   INTEGER,
                     uses       INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL
@@ -199,6 +215,22 @@ class Database:
                     PRIMARY KEY (code, user_id)
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS case_keys (
+                    user_id  INTEGER NOT NULL,
+                    case_id  TEXT NOT NULL,
+                    amount   INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, case_id)
+                )
+            """)
+            async with db.execute("PRAGMA table_info(promo_codes)") as cur:
+                promo_columns = [row[1] for row in await cur.fetchall()]
+            if "reward_type" not in promo_columns:
+                await db.execute("ALTER TABLE promo_codes ADD COLUMN reward_type TEXT NOT NULL DEFAULT 'coins'")
+            if "case_id" not in promo_columns:
+                await db.execute("ALTER TABLE promo_codes ADD COLUMN case_id TEXT")
+            if "case_count" not in promo_columns:
+                await db.execute("ALTER TABLE promo_codes ADD COLUMN case_count INTEGER")
             await db.commit()
 
     # --------------------------------------------------
@@ -649,6 +681,21 @@ class Database:
             except aiosqlite.IntegrityError:
                 return False
 
+    async def create_case_promo(self, code: str, case_id: str, case_count: int, max_uses: int | None) -> bool:
+        if case_id not in CASES or case_count <= 0 or (max_uses is not None and max_uses <= 0):
+            return False
+        async with aiosqlite.connect(self.path) as db:
+            try:
+                await db.execute(
+                    "INSERT INTO promo_codes (code, reward, reward_type, case_id, case_count, max_uses, created_at) "
+                    "VALUES (?, 0, 'case', ?, ?, ?, ?)",
+                    (code, case_id, case_count, max_uses, time.time()),
+                )
+                await db.commit()
+                return True
+            except aiosqlite.IntegrityError:
+                return False
+
     async def delete_promo(self, code: str) -> bool:
         async with aiosqlite.connect(self.path) as db:
             cursor = await db.execute("DELETE FROM promo_codes WHERE code=?", (code,))
@@ -658,46 +705,93 @@ class Database:
     async def get_promos(self) -> list:
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
-                "SELECT code, reward, max_uses, uses FROM promo_codes ORDER BY created_at DESC"
+                "SELECT code, reward, reward_type, case_id, case_count, max_uses, uses "
+                "FROM promo_codes ORDER BY created_at DESC"
             ) as cur:
                 return await cur.fetchall()
+
+    async def get_case_keys(self, user_id: int, case_id: str) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT amount FROM case_keys WHERE user_id=? AND case_id=?", (user_id, case_id)
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row else 0
+
+    async def open_case(self, user_id: int, case_id: str, price: int) -> str:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await db.execute(
+                    "UPDATE case_keys SET amount = amount - 1 "
+                    "WHERE user_id=? AND case_id=? AND amount > 0",
+                    (user_id, case_id),
+                )
+                if cursor.rowcount == 1:
+                    await db.commit()
+                    return "key"
+
+                await db.execute(
+                    "INSERT OR IGNORE INTO coins (user_id, balance) VALUES (?, ?)",
+                    (user_id, COINS_START),
+                )
+                cursor = await db.execute(
+                    "UPDATE coins SET balance = balance - ? WHERE user_id=? AND balance >= ?",
+                    (price, user_id, price),
+                )
+                if cursor.rowcount != 1:
+                    await db.rollback()
+                    return "insufficient"
+                await db.commit()
+                return "coins"
+            except Exception:
+                await db.rollback()
+                raise
 
     async def redeem_promo(self, code: str, user_id: int):
         async with aiosqlite.connect(self.path) as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
                 async with db.execute(
-                    "SELECT reward, max_uses, uses FROM promo_codes WHERE code=?", (code,)
+                    "SELECT reward, reward_type, case_id, case_count, max_uses, uses "
+                    "FROM promo_codes WHERE code=?", (code,)
                 ) as cur:
                     promo = await cur.fetchone()
                 if not promo:
                     await db.rollback()
-                    return "not_found", None, None, None
+                    return "not_found", None, None, None, None, None, None
 
-                reward, max_uses, uses = promo
+                reward, reward_type, case_id, case_count, max_uses, uses = promo
                 async with db.execute(
                     "SELECT 1 FROM promo_activations WHERE code=? AND user_id=?", (code, user_id)
                 ) as cur:
                     already_used = await cur.fetchone()
                 if already_used:
                     await db.rollback()
-                    return "already_used", None, None, None
+                    return "already_used", None, None, None, None, None, None
                 if max_uses is not None and uses >= max_uses:
                     await db.rollback()
-                    return "limit_reached", None, None, None
+                    return "limit_reached", None, None, None, None, None, None
 
                 await db.execute(
                     "INSERT INTO promo_activations (code, user_id, activated_at) VALUES (?, ?, ?)",
                     (code, user_id, time.time()),
                 )
-                await db.execute(
-                    "INSERT INTO coins (user_id, balance) VALUES (?, ?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
-                    (user_id, COINS_START + reward, reward),
-                )
+                if reward_type == "case":
+                    await db.execute(
+                        "INSERT INTO case_keys (user_id, case_id, amount) VALUES (?, ?, ?) "
+                        "ON CONFLICT(user_id, case_id) DO UPDATE SET amount = amount + ?",
+                        (user_id, case_id, case_count, case_count),
+                    )
+                else:
+                    await db.execute(
+                        "INSERT INTO coins (user_id, balance) VALUES (?, ?) "
+                        "ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
+                        (user_id, COINS_START + reward, reward),
+                    )
                 await db.execute("UPDATE promo_codes SET uses = uses + 1 WHERE code=?", (code,))
                 await db.commit()
-                return "success", reward, uses + 1, max_uses
+                return "success", reward, reward_type, case_id, case_count, uses + 1, max_uses
             except Exception:
                 await db.rollback()
                 raise
@@ -826,6 +920,7 @@ async def casino_timeout_checker(bot: Bot) -> None:
 router    = Router()
 cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=COOLDOWN_SECONDS)
 casino_bet_cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=CASINO_BET_COOLDOWN)
+case_open_cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=CASE_OPEN_COOLDOWN)
 
 def start_keyboard():
     buttons = [
@@ -843,6 +938,11 @@ def exchange_keyboard(balance: int):
         [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_100:,} DC → подарок 100⭐".replace(",", " "), callback_data="exch_gift_100")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def cases_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📦 KARAPUZ — 1 000 DC", callback_data="case_open_karapuz")],
+    ])
 
 # =========================
 # PRIVATE — /start
@@ -1203,6 +1303,31 @@ async def cmd_deletepromo(message: Message) -> None:
     else:
         await message.answer("❌ Промокод не найден.")
 
+@router.message(Command("createcasepromo"), F.chat.type == "private")
+async def cmd_createcasepromo(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) not in (3, 4, 5):
+        await message.answer("Использование: /createcasepromo КОД КЕЙС [ключей] [лимит]\nПример: /createcasepromo KARAPUZFREE karapuz 1 100")
+        return
+    code = args[1].upper()
+    case_id = args[2].lower()
+    if not 3 <= len(code) <= 32 or not all(char.isalnum() or char in "_-" for char in code):
+        await message.answer("❌ Код: от 3 до 32 символов; разрешены латинские буквы, цифры, _ и -.")
+        return
+    try:
+        case_count = int(args[3]) if len(args) >= 4 else 1
+        max_uses = int(args[4]) if len(args) == 5 else None
+    except ValueError:
+        await message.answer("❌ Количество ключей и лимит должны быть целыми числами.")
+        return
+    if not await db.create_case_promo(code, case_id, case_count, max_uses):
+        await message.answer("❌ Не удалось создать промокод: проверь кейс, значения или код.")
+        return
+    limit_text = str(max_uses) if max_uses is not None else "без лимита"
+    await message.answer(f"✅ Промокод {code} создан.\n🎟 Кейс: {CASES[case_id]['title']} × {case_count}\n👥 Активаций: {limit_text}")
+
 @router.message(Command("promos"), F.chat.type == "private")
 async def cmd_promos(message: Message) -> None:
     if message.from_user.id != ADMIN_ID:
@@ -1212,9 +1337,10 @@ async def cmd_promos(message: Message) -> None:
         await message.answer("📭 Активных промокодов нет.")
         return
     text = "🎟 Активные промокоды:\n\n"
-    for code, reward, max_uses, uses in promos:
+    for code, reward, reward_type, case_id, case_count, max_uses, uses in promos:
         limit_text = f"{uses}/{max_uses}" if max_uses is not None else f"{uses}/∞"
-        text += f"{code} — {reward} DC ({limit_text})\n"
+        reward_text = f"{CASES[case_id]['title']} × {case_count}" if reward_type == "case" else f"{reward} DC"
+        text += f"{code} — {reward_text} ({limit_text})\n"
     await message.answer(text)
 
 @router.message(Command("addrefs"), F.chat.type == "private")
@@ -1503,11 +1629,18 @@ async def cmd_promo(message: Message) -> None:
         await message.answer("Использование: /promo КОД")
         return
     code = args[1].upper()
-    status, reward, uses, max_uses = await db.redeem_promo(code, message.from_user.id)
+    status, reward, reward_type, case_id, case_count, uses, max_uses = await db.redeem_promo(code, message.from_user.id)
     if status == "success":
-        balance, _ = await db.get_coins(message.from_user.id)
         limit_text = f"{uses}/{max_uses}" if max_uses is not None else f"{uses}/∞"
-        await message.answer(f"✅ Промокод активирован!\n🎁 Получено: {reward} DC\n🪙 Баланс: {balance} DC\n👥 Активаций: {limit_text}")
+        if reward_type == "case":
+            keys = await db.get_case_keys(message.from_user.id, case_id)
+            await message.answer(
+                f"✅ Промокод активирован!\n🎟 Получено: {CASES[case_id]['title']} × {case_count}\n"
+                f"🔑 Ключей: {keys}\n👥 Активаций: {limit_text}"
+            )
+        else:
+            balance, _ = await db.get_coins(message.from_user.id)
+            await message.answer(f"✅ Промокод активирован!\n🎁 Получено: {reward} DC\n🪙 Баланс: {balance} DC\n👥 Активаций: {limit_text}")
     elif status == "already_used":
         await message.answer("❌ Ты уже активировал этот промокод.")
     elif status == "limit_reached":
@@ -1674,12 +1807,69 @@ async def cmd_bonus(message: Message) -> None:
     await message.reply(f"🎁 Ежедневный бонус:\n\n{chance_text}\n{coin_text}")
 
 # =========================
+# PRIVATE — CASES
+# =========================
+
+@router.message(Command("cases"), F.chat.type == "private")
+async def cmd_cases(message: Message) -> None:
+    if await db.is_banned(message.from_user.id):
+        await message.answer(BAN_MESSAGE)
+        return
+    case = CASES["karapuz"]
+    keys = await db.get_case_keys(message.from_user.id, "karapuz")
+    rewards_text = "\n".join(f"• {reward:,} DC — {chance}%".replace(",", " ") for reward, chance in case["rewards"])
+    await message.answer(
+        f"📦 Кейс {case['title']}\n\n"
+        f"💰 Цена: {case['price']:,} DC\n"
+        f"🔑 Твоих ключей: {keys}\n\n"
+        f"🎁 Возможные награды:\n{rewards_text}",
+        reply_markup=cases_keyboard(),
+    )
+
+@router.callback_query(F.data == "case_open_karapuz")
+async def open_karapuz_case(callback: CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    if await db.is_banned(user_id):
+        await callback.answer(BAN_MESSAGE, show_alert=True)
+        return
+    if user_id in case_open_cooldowns:
+        await callback.answer(f"⏳ Следующее открытие через {CASE_OPEN_COOLDOWN} сек.", show_alert=True)
+        return
+
+    case = CASES["karapuz"]
+    case_open_cooldowns[user_id] = True
+    payment = await db.open_case(user_id, "karapuz", case["price"])
+    if payment == "insufficient":
+        case_open_cooldowns.pop(user_id, None)
+        balance, _ = await db.get_coins(user_id)
+        await callback.answer(f"❌ Нужно {case['price']} DC, у тебя {balance}", show_alert=True)
+        return
+
+    rewards, weights = zip(*case["rewards"])
+    reward = random.choices(rewards, weights=weights, k=1)[0]
+    new_balance = await db.add_coins(user_id, reward)
+    keys = await db.get_case_keys(user_id, "karapuz")
+    payment_text = "🔑 Использован ключ кейса" if payment == "key" else f"💸 Списано: {case['price']:,} DC".replace(",", " ")
+    result_text = (
+        f"📦 {case['title']} открыт!\n\n"
+        f"🎉 Выпало: {reward:,} DC\n"
+        f"{payment_text}\n"
+        f"🪙 Баланс: {new_balance:,} DC\n"
+        f"🔑 Ключей: {keys}"
+    ).replace(",", " ")
+    await callback.message.edit_text(
+        result_text,
+        reply_markup=cases_keyboard(),
+    )
+    await callback.answer()
+
+# =========================
 # GROUP — CASINO
 # =========================
 
 @router.message(Command("slots"))
 async def cmd_slots(message: Message) -> None:
-    if message.chat.type != "private" and message.chat.id != MAIN_CHAT_ID:
+    if message.chat.type != "private":
         return
     if await db.is_banned(message.from_user.id):
         await message.reply(BAN_MESSAGE)
@@ -1745,7 +1935,7 @@ async def cmd_slots(message: Message) -> None:
 
 @router.message(Command("roulette"))
 async def cmd_roulette(message: Message) -> None:
-    if message.chat.type != "private" and message.chat.id != MAIN_CHAT_ID:
+    if message.chat.type != "private":
         return
     if await db.is_banned(message.from_user.id):
         await message.reply(BAN_MESSAGE)
@@ -1817,7 +2007,7 @@ async def cmd_roulette(message: Message) -> None:
 
 @router.message(Command("dice"))
 async def cmd_dice(message: Message) -> None:
-    if message.chat.type != "private" and message.chat.id != MAIN_CHAT_ID:
+    if message.chat.type != "private":
         return
     if await db.is_banned(message.from_user.id):
         await message.reply(BAN_MESSAGE)
@@ -2210,5 +2400,5 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
-
     asyncio.run(main())
+
