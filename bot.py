@@ -40,7 +40,26 @@ BONUS_COOLDOWN     = 43200
 REF_BONUS          = 1.0
 VALID_REF_MESSAGES = 10
 
-BAN_MESSAGE = "🚫Вы заблокированы и не можете участвовать в розыгрышах в боте."
+# D-COINS
+COINS_START        = 10
+COINS_PER_MSG      = 1
+COINS_VIP_PER_MSG  = 2
+COINS_BONUS        = 20
+COINS_VIP_BONUS    = 30
+COINS_BONUS_CD     = 43200
+
+# Казино
+CASINO_MIN_BET     = 5
+CASINO_TIMEOUT     = 300  # 5 минут
+
+# Обмен
+EXCHANGE_CHANCE    = 500   # 500 DC = +1% шанса
+EXCHANGE_GIFT_15   = 750
+EXCHANGE_GIFT_25   = 900
+EXCHANGE_GIFT_50   = 1200
+EXCHANGE_GIFT_100  = 1500
+
+BAN_MESSAGE = "🚫 Вы заблокированы и не можете участвовать в розыгрышах в боте."
 
 POPOLNIT_AMOUNT = 50
 
@@ -62,8 +81,11 @@ REF_GIFT_IDS = {
 
 WIN_GIFT_IDS = [
     "5170233102089322756",
-    "5170145012310081615",  # <- сюда вставь второй ID подарка
+    "5170233102089322756",  # <- вставь второй ID подарка
 ]
+
+# Активные игры казино: user_id -> {"game": str, "bet": int, "data": dict, "expires": float}
+active_games: dict = {}
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +167,13 @@ class Database:
                     PRIMARY KEY (user_id, chat_id, date)
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS coins (
+                    user_id         INTEGER PRIMARY KEY,
+                    balance         INTEGER DEFAULT 10,
+                    last_coin_bonus REAL    DEFAULT 0
+                )
+            """)
             await db.commit()
 
     # --------------------------------------------------
@@ -171,7 +200,7 @@ class Database:
             ) as cur:
                 return await cur.fetchone() is not None
 
-    async def get_ban_list(self) -> list[tuple]:
+    async def get_ban_list(self) -> list:
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
                 "SELECT u.user_id, COALESCE(s.user_name, CAST(u.user_id AS TEXT)), u.reason "
@@ -193,7 +222,7 @@ class Database:
             )
             await db.commit()
 
-    async def get_pending_gifts(self) -> list[tuple]:
+    async def get_pending_gifts(self) -> list:
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
                 "SELECT id, user_id, user_name, gift_id, reason, created_at FROM pending_gifts ORDER BY created_at ASC"
@@ -209,7 +238,7 @@ class Database:
     # USER STATS
     # --------------------------------------------------
 
-    async def get_user(self, user_id: int, chat_id: int) -> tuple[float, int, float]:
+    async def get_user(self, user_id: int, chat_id: int) -> tuple:
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
                 "SELECT chance, msg_count, last_bonus FROM user_stats WHERE user_id=? AND chat_id=?",
@@ -240,7 +269,7 @@ class Database:
                 row = await cur.fetchone()
         return row[0] if row else str(user_id)
 
-    async def get_top(self, chat_id: int, limit: int = 5) -> list[tuple]:
+    async def get_top(self, chat_id: int, limit: int = 5) -> list:
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
                 "SELECT user_name, chance, msg_count FROM user_stats WHERE chat_id=? ORDER BY chance DESC LIMIT ?",
@@ -252,7 +281,7 @@ class Database:
     # INVITE LINKS
     # --------------------------------------------------
 
-    async def get_invite_link(self, user_id: int) -> str | None:
+    async def get_invite_link(self, user_id: int):
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
                 "SELECT invite_link FROM invite_links WHERE user_id=?", (user_id,)
@@ -268,7 +297,7 @@ class Database:
             )
             await db.commit()
 
-    async def get_owner_by_link(self, invite_link: str) -> int | None:
+    async def get_owner_by_link(self, invite_link: str):
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
                 "SELECT user_id FROM invite_links WHERE invite_link=?", (invite_link,)
@@ -288,7 +317,7 @@ class Database:
             )
             await db.commit()
 
-    async def get_referral(self, invited_user_id: int) -> tuple | None:
+    async def get_referral(self, invited_user_id: int):
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
                 "SELECT inviter_user_id, valid, msg_count FROM referrals WHERE invited_user_id=?",
@@ -345,7 +374,7 @@ class Database:
                 row = await cur.fetchone()
         return row[0] if row else 0
 
-    async def get_wins_top(self, chat_id: int, limit: int = 10) -> list[tuple]:
+    async def get_wins_top(self, chat_id: int, limit: int = 10) -> list:
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
                 "SELECT user_name, COUNT(*) as cnt FROM wins WHERE chat_id=? GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
@@ -357,7 +386,7 @@ class Database:
     # REF TOP
     # --------------------------------------------------
 
-    async def get_refs_top(self, limit: int = 10) -> list[tuple]:
+    async def get_refs_top(self, limit: int = 10) -> list:
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
                 "SELECT r.inviter_user_id, "
@@ -406,7 +435,7 @@ class Database:
             """, (user_id, chat_id, user_name, today))
             await db.commit()
 
-    async def get_daily_top(self, chat_id: int, limit: int = 10) -> list[tuple]:
+    async def get_daily_top(self, chat_id: int, limit: int = 10) -> list:
         today = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y-%m-%d")
         async with aiosqlite.connect(self.path) as db:
             async with db.execute(
@@ -429,9 +458,7 @@ class Database:
                 INSERT INTO daily_stats (user_id, chat_id, user_name, date, msg_count)
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, chat_id, date)
-                DO UPDATE SET
-                    msg_count = msg_count + ?,
-                    user_name = excluded.user_name
+                DO UPDATE SET msg_count = msg_count + ?, user_name = excluded.user_name
             """, (user_id, chat_id, user_name, today, amount, amount))
             await db.commit()
 
@@ -439,11 +466,63 @@ class Database:
         today = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%Y-%m-%d")
         async with aiosqlite.connect(self.path) as db:
             await db.execute("""
-                UPDATE daily_stats
-                SET msg_count = MAX(msg_count - ?, 0)
+                UPDATE daily_stats SET msg_count = MAX(msg_count - ?, 0)
                 WHERE user_id=? AND chat_id=? AND date=?
             """, (amount, user_id, chat_id, today))
             await db.commit()
+
+    # --------------------------------------------------
+    # COINS
+    # --------------------------------------------------
+
+    async def get_coins(self, user_id: int) -> tuple:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT balance, last_coin_bonus FROM coins WHERE user_id=?", (user_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        return row if row else (COINS_START, 0.0)
+
+    async def add_coins(self, user_id: int, amount: int) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""
+                INSERT INTO coins (user_id, balance) VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?
+            """, (user_id, COINS_START + amount, amount))
+            await db.commit()
+            async with db.execute("SELECT balance FROM coins WHERE user_id=?", (user_id,)) as cur:
+                row = await cur.fetchone()
+        return row[0] if row else COINS_START
+
+    async def remove_coins(self, user_id: int, amount: int) -> bool:
+        balance, _ = await self.get_coins(user_id)
+        if balance < amount:
+            return False
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE coins SET balance = balance - ? WHERE user_id=?", (amount, user_id)
+            )
+            await db.commit()
+        return True
+
+    async def set_coin_bonus_time(self, user_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("""
+                INSERT INTO coins (user_id, last_coin_bonus) VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET last_coin_bonus = ?
+            """, (user_id, time.time(), time.time()))
+            await db.commit()
+
+    async def get_coins_top(self, limit: int = 10) -> list:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute("""
+                SELECT c.user_id, COALESCE(u.user_name, CAST(c.user_id AS TEXT)), c.balance
+                FROM coins c
+                LEFT JOIN user_stats u ON u.user_id = c.user_id AND u.chat_id = ?
+                ORDER BY c.balance DESC LIMIT ?
+            """, (MAIN_CHAT_ID, limit)) as cur:
+                return await cur.fetchall()
+
 
 db = Database(os.getenv("DB_PATH", "activity.db"))
 
@@ -466,18 +545,14 @@ async def reward_inviter(bot: Bot, inviter_id: int) -> None:
     inv_chance, inv_msgs, inv_bonus = await db.get_user(inviter_id, MAIN_CHAT_ID)
     new_chance = min(inv_chance + REF_BONUS, MAX_CHANCE)
     inv_name   = await db.get_user_name(inviter_id)
-
     await db.update_user(inviter_id, MAIN_CHAT_ID, inv_name, new_chance, inv_msgs, inv_bonus)
-
     valid_refs = await db.count_valid_refs(inviter_id)
-
     await send_log(bot,
         f"✅ Валидный реферал\n\n"
         f"👤 Пригласил: {inv_name} ({inviter_id})\n"
         f"👥 Всего валидных: {valid_refs}\n"
         f"📈 Новый шанс: {new_chance:.3f}%"
     )
-
     try:
         await bot.send_message(inviter_id,
             f"🎉 Твой реферал стал активным!\n"
@@ -491,7 +566,6 @@ async def reward_inviter(bot: Bot, inviter_id: int) -> None:
         reward   = REF_REWARDS[valid_refs]
         gift_ids = REF_GIFT_IDS.get(valid_refs, [])
         gift_id  = random.choice(gift_ids) if gift_ids else None
-
         await send_log(bot,
             f"🎁 Реферальная награда\n\n"
             f"👤 {inv_name} ({inviter_id})\n"
@@ -504,7 +578,6 @@ async def reward_inviter(bot: Bot, inviter_id: int) -> None:
             f"🏆 Награда: {reward}\n"
             f"👥 Рефералов: {valid_refs}"
         )
-
         if gift_id:
             try:
                 star_balance = await bot.get_my_star_balance()
@@ -512,10 +585,8 @@ async def reward_inviter(bot: Bot, inviter_id: int) -> None:
                 if star_balance.amount < cost:
                     await db.add_pending_gift(inviter_id, inv_name, gift_id, f"реф. награда {reward}")
                     await bot.send_message(ADMIN_ID,
-                        f"⚠️ Недостаточно звёзд для реф. награды!\n\n"
-                        f"💫 Баланс: {star_balance.amount}⭐\n"
-                        f"👤 {inv_name} ({inviter_id})\n"
-                        f"🏆 {reward}\nДобавлен в /pending"
+                        f"⚠️ Недостаточно звёзд!\n\n💫 Баланс: {star_balance.amount}⭐\n"
+                        f"👤 {inv_name} ({inviter_id})\n🏆 {reward}\nДобавлен в /pending"
                     )
                 else:
                     await bot.send_gift(user_id=inviter_id, gift_id=gift_id)
@@ -525,9 +596,49 @@ async def reward_inviter(bot: Bot, inviter_id: int) -> None:
                 await db.add_pending_gift(inviter_id, inv_name, gift_id, f"реф. награда {reward} — ошибка: {e}")
                 await bot.send_message(ADMIN_ID,
                     f"❌ Не удалось отправить реф. подарок\n\n"
-                    f"👤 {inv_name} ({inviter_id})\n"
-                    f"🏆 {reward}\n📛 {e}\nДобавлен в /pending"
+                    f"👤 {inv_name} ({inviter_id})\n🏆 {reward}\n📛 {e}\nДобавлен в /pending"
                 )
+
+
+async def send_gift_safe(bot: Bot, user_id: int, user_name: str, gift_id: str, reason: str) -> None:
+    try:
+        star_balance = await bot.get_my_star_balance()
+        cost_map = {
+            EXCHANGE_GIFT_15:  15,
+            EXCHANGE_GIFT_25:  25,
+            EXCHANGE_GIFT_50:  50,
+            EXCHANGE_GIFT_100: 100,
+        }
+        cost = 15
+        await bot.send_gift(user_id=user_id, gift_id=gift_id)
+        await send_log(bot, f"🎁 Подарок отправлен\n\n{user_name} ({user_id})\n📝 {reason}\n💫 Баланс: {star_balance.amount}⭐")
+    except Exception as e:
+        await db.add_pending_gift(user_id, user_name, gift_id, f"{reason} — ошибка: {e}")
+        await bot.send_message(ADMIN_ID, f"❌ Ошибка отправки подарка\n\n👤 {user_name} ({user_id})\n📝 {reason}\n📛 {e}\nДобавлен в /pending")
+
+
+# =========================
+# CASINO TIMEOUT CHECKER
+# =========================
+
+async def casino_timeout_checker(bot: Bot) -> None:
+    while True:
+        await asyncio.sleep(30)
+        now = time.time()
+        expired = [uid for uid, g in active_games.items() if g["expires"] < now]
+        for uid in expired:
+            game = active_games.pop(uid)
+            bet  = game["bet"]
+            chat_id = game.get("chat_id", MAIN_CHAT_ID)
+            await db.add_coins(uid, bet)
+            try:
+                await bot.send_message(
+                    chat_id,
+                    f"⏰ Время вышло! Ставка {bet} D-COINS возвращена на твой баланс.",
+                )
+            except Exception:
+                pass
+
 
 # =========================
 # ROUTER
@@ -539,7 +650,17 @@ cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=COOLDOWN_SECONDS)
 def start_keyboard():
     buttons = [
         [InlineKeyboardButton(text="🔗 Реферальная ссылка", callback_data="ref")],
-        [InlineKeyboardButton(text="📊 Реферальная статистика", callback_data="refstats")]
+        [InlineKeyboardButton(text="📊 Реферальная статистика", callback_data="refstats")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def exchange_keyboard(balance: int):
+    buttons = [
+        [InlineKeyboardButton(text=f"📈 500 DC → +1% шанса", callback_data="exch_chance")],
+        [InlineKeyboardButton(text=f"🎁 750 DC → подарок 15⭐", callback_data="exch_gift_15")],
+        [InlineKeyboardButton(text=f"🎁 900 DC → подарок 25⭐", callback_data="exch_gift_25")],
+        [InlineKeyboardButton(text=f"🎁 1200 DC → подарок 50⭐", callback_data="exch_gift_50")],
+        [InlineKeyboardButton(text=f"🎁 1500 DC → подарок 100⭐", callback_data="exch_gift_100")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -552,25 +673,20 @@ async def cmd_start(message: Message) -> None:
     if await db.is_banned(message.from_user.id):
         await message.answer(BAN_MESSAGE)
         return
-
     await message.answer(
-        "👋 Добро пожаловать!\n\n"
-        "Выберите действие:",
+        "👋 Добро пожаловать!\n\nВыберите действие:",
         reply_markup=start_keyboard()
     )
-
 
 @router.callback_query(F.data == "ref")
 async def ref_callback(callback: CallbackQuery, bot: Bot):
     await cmd_ref(callback.message, bot)
     await callback.answer()
 
-
 @router.callback_query(F.data == "refstats")
 async def refstats_callback(callback: CallbackQuery):
     await cmd_refstats(callback.message)
     await callback.answer()
-
 
 # =========================
 # PRIVATE — /ref
@@ -620,7 +736,7 @@ async def cmd_refstats(message: Message) -> None:
     )
 
 # =========================
-# PRIVATE — /say (только для админа)
+# PRIVATE — ADMIN COMMANDS
 # =========================
 
 @router.message(Command("say"), F.chat.type == "private")
@@ -631,16 +747,11 @@ async def cmd_say(message: Message, bot: Bot) -> None:
     if len(args) < 2 or not args[1].strip():
         await message.answer("Использование: /say текст сообщения")
         return
-    text = args[1].strip()
     try:
-        await bot.send_message(MAIN_CHAT_ID, text)
+        await bot.send_message(MAIN_CHAT_ID, args[1].strip())
         await message.answer("✅ Сообщение отправлено в чат.")
     except Exception as e:
-        await message.answer(f"❌ Не удалось отправить сообщение.\n\n📛 {e}")
-
-# =========================
-# PRIVATE — /vip (только для админа)
-# =========================
+        await message.answer(f"❌ Не удалось отправить.\n\n📛 {e}")
 
 @router.message(Command("vip"), F.chat.type == "private")
 async def cmd_vip(message: Message) -> None:
@@ -653,7 +764,7 @@ async def cmd_vip(message: Message) -> None:
     try:
         user_id = int(args[1].lstrip("@"))
     except ValueError:
-        await message.answer("❌ Укажи числовой ID пользователя.")
+        await message.answer("❌ Укажи числовой ID.")
         return
     await db.set_vip(user_id)
     await message.answer(f"✅ Пользователь {user_id} назначен VIP.")
@@ -669,10 +780,10 @@ async def cmd_unvip(message: Message) -> None:
     try:
         user_id = int(args[1].lstrip("@"))
     except ValueError:
-        await message.answer("❌ Укажи числовой ID пользователя.")
+        await message.answer("❌ Укажи числовой ID.")
         return
     await db.remove_vip(user_id)
-    await message.answer(f"✅ VIP статус снят с пользователя {user_id}.")
+    await message.answer(f"✅ VIP статус снят с {user_id}.")
 
 @router.message(Command("viplist"), F.chat.type == "private")
 async def cmd_viplist(message: Message) -> None:
@@ -693,10 +804,6 @@ async def cmd_viplist(message: Message) -> None:
         text += f"• {name} ({uid}) — {msg_count} сообщ.\n"
     await message.answer(text)
 
-# =========================
-# PRIVATE — /ban (только для админа)
-# =========================
-
 @router.message(Command("ban"), F.chat.type == "private")
 async def cmd_ban(message: Message) -> None:
     if message.from_user.id != ADMIN_ID:
@@ -708,7 +815,7 @@ async def cmd_ban(message: Message) -> None:
     try:
         user_id = int(args[1])
     except ValueError:
-        await message.answer("❌ Укажи числовой ID пользователя.")
+        await message.answer("❌ Укажи числовой ID.")
         return
     reason = args[2] if len(args) > 2 else ""
     await db.ban_user(user_id, reason)
@@ -725,7 +832,7 @@ async def cmd_unban(message: Message) -> None:
     try:
         user_id = int(args[1])
     except ValueError:
-        await message.answer("❌ Укажи числовой ID пользователя.")
+        await message.answer("❌ Укажи числовой ID.")
         return
     await db.unban_user(user_id)
     await message.answer(f"✅ Пользователь {user_id} разблокирован.")
@@ -738,17 +845,13 @@ async def cmd_banlist(message: Message) -> None:
     if not ban_list:
         await message.answer("✅ Список заблокированных пуст.")
         return
-    text = "🚫 Заблокированные пользователи:\n\n"
+    text = "🚫 Заблокированные:\n\n"
     for uid, name, reason in ban_list:
         text += f"• {name} ({uid})"
         if reason:
             text += f" — {reason}"
         text += "\n"
     await message.answer(text)
-
-# =========================
-# PRIVATE — /addmsgs (только для админа)
-# =========================
 
 @router.message(Command("addmsgs"), F.chat.type == "private")
 async def cmd_addmsgs(message: Message) -> None:
@@ -765,7 +868,7 @@ async def cmd_addmsgs(message: Message) -> None:
         await message.answer("❌ Укажи числовой ID и количество.")
         return
     chance, msg_count, last_bonus = await db.get_user(user_id, MAIN_CHAT_ID)
-    inv_name   = await db.get_user_name(user_id)
+    inv_name  = await db.get_user_name(user_id)
     new_count  = msg_count + amount
     new_chance = min(round(chance + STEP * amount, 3), MAX_CHANCE)
     await db.update_user(user_id, MAIN_CHAT_ID, inv_name, new_chance, new_count, last_bonus)
@@ -791,7 +894,7 @@ async def cmd_removemsgs(message: Message) -> None:
         await message.answer("❌ Укажи числовой ID и количество.")
         return
     chance, msg_count, last_bonus = await db.get_user(user_id, MAIN_CHAT_ID)
-    inv_name   = await db.get_user_name(user_id)
+    inv_name  = await db.get_user_name(user_id)
     new_count  = max(0, msg_count - amount)
     new_chance = max(round(chance - STEP * amount, 3), START_CHANCE)
     await db.update_user(user_id, MAIN_CHAT_ID, inv_name, new_chance, new_count, last_bonus)
@@ -812,16 +915,13 @@ async def cmd_addday(message: Message) -> None:
         return
     try:
         user_id = int(args[1])
-        amount = int(args[2])
+        amount  = int(args[2])
     except ValueError:
         await message.answer("❌ Укажи ID и количество.")
         return
     name = await db.get_user_name(user_id)
     await db.add_day_messages(user_id, MAIN_CHAT_ID, name, amount)
-    await message.answer(
-        f"✅ Добавлено {amount} сообщений в daytop\n"
-        f"👤 {name} ({user_id})"
-    )
+    await message.answer(f"✅ Добавлено {amount} сообщений в daytop\n👤 {name} ({user_id})")
 
 @router.message(Command("removeday"), F.chat.type == "private")
 async def cmd_removeday(message: Message) -> None:
@@ -833,19 +933,52 @@ async def cmd_removeday(message: Message) -> None:
         return
     try:
         user_id = int(args[1])
-        amount = int(args[2])
+        amount  = int(args[2])
     except ValueError:
         await message.answer("❌ Укажи ID и количество.")
         return
     await db.remove_day_messages(user_id, MAIN_CHAT_ID, amount)
-    await message.answer(
-        f"✅ Убрано {amount} сообщений из daytop\n"
-        f"👤 {user_id}"
-    )
+    await message.answer(f"✅ Убрано {amount} сообщений из daytop\n👤 {user_id}")
 
-# =========================
-# PRIVATE — /addrefs (только для админа)
-# =========================
+@router.message(Command("addcoins"), F.chat.type == "private")
+async def cmd_addcoins(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("Использование: /addcoins user_id количество")
+        return
+    try:
+        user_id = int(args[1])
+        amount  = int(args[2])
+    except ValueError:
+        await message.answer("❌ Укажи числовой ID и количество.")
+        return
+    new_balance = await db.add_coins(user_id, amount)
+    name = await db.get_user_name(user_id)
+    await message.answer(f"✅ Добавлено {amount} DC\n👤 {name} ({user_id})\n🪙 Баланс: {new_balance} D-COINS")
+
+@router.message(Command("removecoins"), F.chat.type == "private")
+async def cmd_removecoins(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("Использование: /removecoins user_id количество")
+        return
+    try:
+        user_id = int(args[1])
+        amount  = int(args[2])
+    except ValueError:
+        await message.answer("❌ Укажи числовой ID и количество.")
+        return
+    ok = await db.remove_coins(user_id, amount)
+    name = await db.get_user_name(user_id)
+    balance, _ = await db.get_coins(user_id)
+    if ok:
+        await message.answer(f"✅ Убрано {amount} DC\n👤 {name} ({user_id})\n🪙 Баланс: {balance} D-COINS")
+    else:
+        await message.answer(f"❌ Недостаточно монет\n👤 {name} ({user_id})\n🪙 Баланс: {balance} D-COINS")
 
 @router.message(Command("addrefs"), F.chat.type == "private")
 async def cmd_addrefs(message: Message, bot: Bot) -> None:
@@ -861,9 +994,7 @@ async def cmd_addrefs(message: Message, bot: Bot) -> None:
     except ValueError:
         await message.answer("❌ Укажи числовой ID и количество.")
         return
-
     prev_refs = await db.count_valid_refs(user_id)
-
     async with aiosqlite.connect(db.path) as conn:
         for i in range(amount):
             fake_id = -(user_id * 1000 + i)
@@ -872,47 +1003,31 @@ async def cmd_addrefs(message: Message, bot: Bot) -> None:
                 (fake_id, user_id)
             )
         await conn.commit()
-
     valid_refs = await db.count_valid_refs(user_id)
     inv_name   = await db.get_user_name(user_id)
-
     added = valid_refs - prev_refs
     new_chance = None
     if added > 0:
         chance, msg_count, last_bonus = await db.get_user(user_id, MAIN_CHAT_ID)
         new_chance = min(round(chance + REF_BONUS * added, 3), MAX_CHANCE)
         await db.update_user(user_id, MAIN_CHAT_ID, inv_name, new_chance, msg_count, last_bonus)
-
     await message.answer(
         f"✅ Добавлено {amount} рефералов\n"
         f"👤 {inv_name} ({user_id})\n"
         f"👥 Всего валидных: {valid_refs}"
-        + (f"\n📈 Шанс: {new_chance:.3f}% (+{REF_BONUS * added:.1f}%)" if new_chance else "")
+        + (f"\n📈 Шанс: {new_chance:.3f}%" if new_chance else "")
     )
-
     for level, reward in REF_REWARDS.items():
         if valid_refs >= level and prev_refs < level:
             gift_ids = REF_GIFT_IDS.get(level, [])
             gift_id  = random.choice(gift_ids) if gift_ids else None
-            await send_log(bot, f"🎁 Реферальная награда\n\n👤 {inv_name} ({user_id})\n🏆 {reward}\n👥 Рефералов: {valid_refs}")
-            await bot.send_message(ADMIN_ID, f"🎁 Реферальная награда\n\n👤 {inv_name} ({user_id})\n🏆 {reward}\n👥 Рефералов: {valid_refs}")
-            try:
-                await bot.send_message(user_id, f"🎉 Ты достиг {level} рефералов!\n🏆 Награда: {reward}\nПодарок уже отправлен тебе в личку!")
-            except Exception:
-                pass
+            await send_log(bot, f"🎁 Реф. награда\n\n👤 {inv_name} ({user_id})\n🏆 {reward}")
+            await bot.send_message(ADMIN_ID, f"🎁 Реф. награда\n\n👤 {inv_name} ({user_id})\n🏆 {reward}")
             if gift_id:
                 try:
-                    star_balance = await bot.get_my_star_balance()
-                    cost = int(reward.replace("⭐", "").strip())
-                    if star_balance.amount < cost:
-                        await db.add_pending_gift(user_id, inv_name, gift_id, f"реф. награда {reward}")
-                        await bot.send_message(ADMIN_ID, f"⚠️ Недостаточно звёзд!\n💫 Баланс: {star_balance.amount}⭐\n👤 {inv_name}\n🏆 {reward}\nДобавлен в /pending")
-                    else:
-                        await bot.send_gift(user_id=user_id, gift_id=gift_id)
-                        await send_log(bot, f"🎁 Реф. подарок отправлен\n\n{inv_name} ({user_id})\n{reward}")
+                    await bot.send_gift(user_id=user_id, gift_id=gift_id)
                 except Exception as e:
                     await db.add_pending_gift(user_id, inv_name, gift_id, f"реф. награда {reward} — ошибка: {e}")
-                    await bot.send_message(ADMIN_ID, f"❌ Ошибка реф. подарка\n\n👤 {inv_name}\n🏆 {reward}\n📛 {e}\nДобавлен в /pending")
 
 @router.message(Command("removerefs"), F.chat.type == "private")
 async def cmd_removerefs(message: Message) -> None:
@@ -942,12 +1057,8 @@ async def cmd_removerefs(message: Message) -> None:
     await message.answer(
         f"✅ Убрано {len(rows)} рефералов\n"
         f"👤 {inv_name} ({user_id})\n"
-        f"👥 Осталось валидных: {valid_refs}"
+        f"👥 Осталось: {valid_refs}"
     )
-
-# =========================
-# PRIVATE — /balance (только для админа)
-# =========================
 
 @router.message(Command("balance"), F.chat.type == "private")
 async def cmd_balance(message: Message, bot: Bot) -> None:
@@ -957,12 +1068,7 @@ async def cmd_balance(message: Message, bot: Bot) -> None:
         star_balance = await bot.get_my_star_balance()
         await message.answer(f"💫 Баланс бота: {star_balance.amount} звёзд")
     except Exception as e:
-        logger.warning("get_my_star_balance failed: %s", e)
         await message.answer("❌ Не удалось получить баланс.")
-
-# =========================
-# PRIVATE — /popolnit (только для админа)
-# =========================
 
 @router.message(Command("popolnit"), F.chat.type == "private")
 async def cmd_popolnit(message: Message, bot: Bot) -> None:
@@ -985,13 +1091,8 @@ async def pre_checkout(query: PreCheckoutQuery) -> None:
 async def successful_payment_handler(message: Message, bot: Bot) -> None:
     payment = message.successful_payment
     if payment.invoice_payload == "admin_topup":
-        stars = payment.total_amount
-        await message.answer(f"✅ Оплата прошла успешно!\n💫 Зачислено: {stars} звёзд на баланс бота.")
-        await send_log(bot, f"💫 Пополнение баланса\n\n👤 Админ: {message.from_user.id}\n⭐ Сумма: {stars} звёзд")
-
-# =========================
-# PRIVATE — /sendgift (только для админа)
-# =========================
+        await message.answer(f"✅ Оплата прошла!\n💫 Зачислено: {payment.total_amount} звёзд.")
+        await send_log(bot, f"💫 Пополнение\n\n👤 Админ: {message.from_user.id}\n⭐ {payment.total_amount} звёзд")
 
 @router.message(Command("sendgift"), F.chat.type == "private")
 async def cmd_sendgift(message: Message, bot: Bot) -> None:
@@ -999,25 +1100,21 @@ async def cmd_sendgift(message: Message, bot: Bot) -> None:
         return
     args = message.text.split()
     if len(args) < 3:
-        await message.answer("Использование: /sendgift user_id gift_id\n\nПример: /sendgift 123456789 5170233102089322756")
+        await message.answer("Использование: /sendgift user_id gift_id")
         return
     try:
         user_id = int(args[1])
         gift_id = args[2]
     except ValueError:
-        await message.answer("❌ Укажи числовой ID пользователя и ID подарка.")
+        await message.answer("❌ Укажи числовой ID и gift_id.")
         return
     try:
         star_balance = await bot.get_my_star_balance()
         await bot.send_gift(user_id=user_id, gift_id=gift_id)
-        await send_log(bot, f"🎁 Ручная выдача подарка\n\n👤 {user_id}\n📦 {gift_id}\n💫 Баланс: {star_balance.amount}⭐")
-        await message.answer(f"✅ Подарок успешно отправлен!\n\n👤 ID: {user_id}\n📦 Gift ID: {gift_id}\n💫 Баланс: {star_balance.amount}⭐")
+        await send_log(bot, f"🎁 Ручная выдача\n\n👤 {user_id}\n📦 {gift_id}\n💫 {star_balance.amount}⭐")
+        await message.answer(f"✅ Подарок отправлен!\n👤 {user_id}\n📦 {gift_id}")
     except Exception as e:
-        await message.answer(f"❌ Не удалось отправить подарок!\n\n📛 Причина: {e}")
-
-# =========================
-# PRIVATE — /pending (только для админа)
-# =========================
+        await message.answer(f"❌ Ошибка: {e}")
 
 @router.message(Command("pending"), F.chat.type == "private")
 async def cmd_pending(message: Message, bot: Bot) -> None:
@@ -1035,17 +1132,13 @@ async def cmd_pending(message: Message, bot: Bot) -> None:
         text += f"#{g_id} | {user_name} ({uid})\n📦 {gift_id}\n📝 {reason} | {date}\n👉 /deliver {g_id}\n\n"
     await message.answer(text)
 
-# =========================
-# PRIVATE — /deliver (только для админа)
-# =========================
-
 @router.message(Command("deliver"), F.chat.type == "private")
 async def cmd_deliver(message: Message, bot: Bot) -> None:
     if message.from_user.id != ADMIN_ID:
         return
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("Использование: /deliver id\nID берёшь из /pending")
+        await message.answer("Использование: /deliver id")
         return
     try:
         gift_db_id = int(args[1])
@@ -1055,17 +1148,17 @@ async def cmd_deliver(message: Message, bot: Bot) -> None:
     gifts = await db.get_pending_gifts()
     gift  = next((g for g in gifts if g[0] == gift_db_id), None)
     if not gift:
-        await message.answer("❌ Подарок не найден. Возможно уже выдан.")
+        await message.answer("❌ Подарок не найден.")
         return
     _, user_id, user_name, gift_id, reason, _ = gift
     try:
         star_balance = await bot.get_my_star_balance()
         await bot.send_gift(user_id=user_id, gift_id=gift_id)
         await db.remove_pending_gift(gift_db_id)
-        await send_log(bot, f"🎁 Отложенный подарок выдан\n\n{user_name} ({user_id})\n💫 Остаток: {star_balance.amount}⭐")
-        await message.answer(f"✅ Подарок успешно выдан!\n\n👤 {user_name} ({user_id})\n💫 Баланс: {star_balance.amount}⭐")
+        await send_log(bot, f"🎁 Отложенный подарок выдан\n\n{user_name} ({user_id})\n💫 {star_balance.amount}⭐")
+        await message.answer(f"✅ Подарок выдан!\n👤 {user_name} ({user_id})\n💫 Баланс: {star_balance.amount}⭐")
     except Exception as e:
-        await message.answer(f"❌ Не удалось выдать подарок!\n\n📛 Причина: {e}\n\nПопробуй позже или пополни баланс через /popolnit")
+        await message.answer(f"❌ Ошибка: {e}\n\nПополни баланс через /popolnit")
 
 # =========================
 # GROUP — /stats
@@ -1082,17 +1175,15 @@ async def cmd_stats(message: Message) -> None:
     chance, msg_count, _ = await db.get_user(user_id, message.chat.id)
     wins = await db.get_wins_count(user_id, message.chat.id)
     valid_refs = await db.count_valid_refs(user_id)
+    balance, _ = await db.get_coins(user_id)
     await message.reply(
         f"📊 Статистика:\n\n"
         f"📈 Шанс: {chance:.3f}%\n"
         f"💬 Сообщений: {msg_count}\n"
-        f"🏆 Побед за всё время: {wins}\n"
-        f"👥 Валидных рефералов: {valid_refs}"
+        f"🏆 Побед: {wins}\n"
+        f"👥 Рефералов: {valid_refs}\n"
+        f"🪙 D-COINS: {balance}"
     )
-
-# =========================
-# GROUP — /top
-# =========================
 
 @router.message(Command("top"))
 async def cmd_top(message: Message) -> None:
@@ -1107,10 +1198,6 @@ async def cmd_top(message: Message) -> None:
         text += f"{i}. {name} — {chance:.3f}% ({count} сообщ.)\n"
     await message.reply(text)
 
-# =========================
-# GROUP — /winstop
-# =========================
-
 @router.message(Command("winstop"))
 async def cmd_winstop(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
@@ -1122,14 +1209,10 @@ async def cmd_winstop(message: Message) -> None:
     if not top:
         await message.reply("🏆 Побед пока нет.")
         return
-    text = "🏆 Топ победителей за всё время:\n\n"
+    text = "🏆 Топ победителей:\n\n"
     for i, (name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} поб.\n"
     await message.reply(text)
-
-# =========================
-# GROUP — /reftop
-# =========================
 
 @router.message(Command("reftop"))
 async def cmd_reftop(message: Message) -> None:
@@ -1142,14 +1225,50 @@ async def cmd_reftop(message: Message) -> None:
     if not top:
         await message.reply("👥 Рефералов пока нет.")
         return
-    text = "👥 Топ по рефералам за всё время:\n\n"
+    text = "👥 Топ по рефералам:\n\n"
     for i, (_, name, cnt) in enumerate(top, start=1):
         text += f"{i}. {name} — {cnt} реф.\n"
     await message.reply(text)
 
-# =========================
-# GROUP — /bonus
-# =========================
+@router.message(Command("cointop"))
+async def cmd_cointop(message: Message) -> None:
+    if message.chat.id != MAIN_CHAT_ID:
+        return
+    if await db.is_banned(message.from_user.id):
+        await message.reply(BAN_MESSAGE)
+        return
+    top = await db.get_coins_top(10)
+    if not top:
+        await message.reply("🪙 D-COINS ни у кого нет.")
+        return
+    text = "🪙 Топ по D-COINS:\n\n"
+    for i, (_, name, bal) in enumerate(top, start=1):
+        text += f"{i}. {name} — {bal} DC\n"
+    await message.reply(text)
+
+@router.message(Command("coins"))
+async def cmd_coins(message: Message) -> None:
+    if message.chat.id != MAIN_CHAT_ID:
+        return
+    if await db.is_banned(message.from_user.id):
+        await message.reply(BAN_MESSAGE)
+        return
+    balance, _ = await db.get_coins(message.from_user.id)
+    await message.reply(f"🪙 Твой баланс: {balance} D-COINS")
+
+@router.message(Command("daytop"))
+async def cmd_daytop(message: Message) -> None:
+    if message.chat.id != MAIN_CHAT_ID:
+        return
+    top = await db.get_daily_top(message.chat.id)
+    if not top:
+        await message.reply("📊 Сегодня сообщений ещё нет.")
+        return
+    today = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%d.%m.%Y")
+    text = f"📊 Топ активных за {today}:\n\n"
+    for i, (name, count) in enumerate(top, start=1):
+        text += f"{i}. {name} — {count} сообщ.\n"
+    await message.reply(text)
 
 @router.message(Command("bonus"))
 async def cmd_bonus(message: Message) -> None:
@@ -1161,40 +1280,331 @@ async def cmd_bonus(message: Message) -> None:
     user_id = message.from_user.id
     name    = display_name(message.from_user)
     chance, msg_count, last_bonus = await db.get_user(user_id, message.chat.id)
+    balance, last_coin_bonus = await db.get_coins(user_id)
     now = time.time()
-    if now - last_bonus < BONUS_COOLDOWN:
-        hours_left = int((BONUS_COOLDOWN - (now - last_bonus)) // 3600)
-        mins_left  = int((BONUS_COOLDOWN - (now - last_bonus)) % 3600 // 60)
-        await message.reply(f"⏳ Бонус уже получен.\nСледующий через: {hours_left} ч. {mins_left} мин.")
-        return
-    bonus_amount = round(random.uniform(0.05, 0.20), 3)
-    new_chance   = min(round(chance + bonus_amount, 3), MAX_CHANCE)
-    await db.update_user(user_id, message.chat.id, name, new_chance, msg_count, now)
-    await message.reply(f"🎁 Бонус: +{bonus_amount:.3f}%\n📈 Новый шанс: {new_chance:.3f}%")
+    is_vip = await db.is_vip(user_id)
+
+    chance_text = ""
+    coin_text   = ""
+
+    if now - last_bonus >= BONUS_COOLDOWN:
+        bonus_amount = round(random.uniform(0.05, 0.20), 3)
+        new_chance   = min(round(chance + bonus_amount, 3), MAX_CHANCE)
+        await db.update_user(user_id, message.chat.id, name, new_chance, msg_count, now)
+        chance_text = f"📈 Шанс: +{bonus_amount:.3f}% → {new_chance:.3f}%"
+    else:
+        left = BONUS_COOLDOWN - (now - last_bonus)
+        h, m = int(left // 3600), int(left % 3600 // 60)
+        chance_text = f"⏳ Шанс-бонус через: {h} ч. {m} мин."
+
+    if now - last_coin_bonus >= COINS_BONUS_CD:
+        coins_amount = COINS_VIP_BONUS if is_vip else COINS_BONUS
+        new_balance  = await db.add_coins(user_id, coins_amount)
+        await db.set_coin_bonus_time(user_id)
+        coin_text = f"🪙 D-COINS: +{coins_amount} → {new_balance} DC"
+    else:
+        left = COINS_BONUS_CD - (now - last_coin_bonus)
+        h, m = int(left // 3600), int(left % 3600 // 60)
+        coin_text = f"⏳ Бонус монет через: {h} ч. {m} мин."
+
+    await message.reply(f"🎁 Ежедневный бонус:\n\n{chance_text}\n{coin_text}")
 
 # =========================
-# GROUP — /daytop
+# GROUP — CASINO
 # =========================
 
-@router.message(Command("daytop"))
-async def cmd_daytop(message: Message) -> None:
+@router.message(Command("slots"))
+async def cmd_slots(message: Message) -> None:
     if message.chat.id != MAIN_CHAT_ID:
         return
+    if await db.is_banned(message.from_user.id):
+        await message.reply(BAN_MESSAGE)
+        return
+    user_id = message.from_user.id
 
-    top = await db.get_daily_top(message.chat.id)
-
-    if not top:
-        await message.reply("📊 Сегодня сообщений ещё нет.")
+    if user_id in active_games:
+        await message.reply("🎰 У тебя уже есть активная игра! Сначала заверши её.")
         return
 
-    today = datetime.now(pytz.timezone("Europe/Moscow")).strftime("%d.%m.%Y")
+    args = message.text.split()
+    if len(args) < 2:
+        await message.reply("Использование: /slots [ставка]\nПример: /slots 50")
+        return
+    try:
+        bet = int(args[1])
+    except ValueError:
+        await message.reply("❌ Ставка должна быть числом.")
+        return
+    if bet < CASINO_MIN_BET:
+        await message.reply(f"❌ Минимальная ставка: {CASINO_MIN_BET} DC")
+        return
 
-    text = f"📊 Топ активных за {today}:\n\n"
+    balance, _ = await db.get_coins(user_id)
+    if balance < bet:
+        await message.reply(f"❌ Недостаточно D-COINS!\n🪙 Твой баланс: {balance} DC")
+        return
 
-    for i, (name, count) in enumerate(top, start=1):
-        text += f"{i}. {name} — {count} сообщ.\n"
+    await db.remove_coins(user_id, bet)
+    balance_after, _ = await db.get_coins(user_id)
 
-    await message.reply(text)
+    SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎"]
+    s1 = random.choice(SYMBOLS)
+    s2 = random.choice(SYMBOLS)
+    s3 = random.choice(SYMBOLS)
+
+    if s1 == s2 == s3:
+        win = bet * 2
+        await db.add_coins(user_id, win)
+        new_balance, _ = await db.get_coins(user_id)
+        await message.reply(
+            f"🎰 {s1} {s2} {s3}\n\n"
+            f"✅ Ты выиграл!\n"
+            f"💸 Ставка: {bet} DC\n"
+            f"🏆 Выигрыш: {win} DC\n"
+            f"🪙 Баланс: {new_balance} DC"
+        )
+    else:
+        await message.reply(
+            f"🎰 {s1} {s2} {s3}\n\n"
+            f"❌ Не повезло!\n"
+            f"💸 Ставка: {bet} DC\n"
+            f"🪙 Баланс: {balance_after} DC"
+        )
+
+
+@router.message(Command("roulette"))
+async def cmd_roulette(message: Message) -> None:
+    if message.chat.id != MAIN_CHAT_ID:
+        return
+    if await db.is_banned(message.from_user.id):
+        await message.reply(BAN_MESSAGE)
+        return
+    user_id = message.from_user.id
+
+    if user_id in active_games:
+        await message.reply("🎰 У тебя уже есть активная игра! Сначала заверши её.")
+        return
+
+    args = message.text.split()
+    if len(args) < 3:
+        await message.reply("Использование: /roulette [red/black] [ставка]\nПример: /roulette red 50")
+        return
+
+    color = args[1].lower()
+    if color not in ("red", "black"):
+        await message.reply("❌ Выбери цвет: red или black\nПример: /roulette red 50")
+        return
+
+    try:
+        bet = int(args[2])
+    except ValueError:
+        await message.reply("❌ Ставка должна быть числом.")
+        return
+    if bet < CASINO_MIN_BET:
+        await message.reply(f"❌ Минимальная ставка: {CASINO_MIN_BET} DC")
+        return
+
+    balance, _ = await db.get_coins(user_id)
+    if balance < bet:
+        await message.reply(f"❌ Недостаточно D-COINS!\n🪙 Твой баланс: {balance} DC")
+        return
+
+    await db.remove_coins(user_id, bet)
+
+    result_color = random.choice(["red"] * 18 + ["black"] * 18 + ["green"])
+    emoji_map = {"red": "🔴", "black": "⚫", "green": "🟢"}
+    result_emoji = emoji_map[result_color]
+    chosen_emoji = "🔴" if color == "red" else "⚫"
+
+    if result_color == color:
+        win = bet * 2
+        await db.add_coins(user_id, win)
+        new_balance, _ = await db.get_coins(user_id)
+        await message.reply(
+            f"🎡 Выпало: {result_emoji}\n\n"
+            f"✅ Ты выиграл!\n"
+            f"💸 Ставка: {bet} DC на {chosen_emoji}\n"
+            f"🏆 Выигрыш: {win} DC\n"
+            f"🪙 Баланс: {new_balance} DC"
+        )
+    else:
+        new_balance, _ = await db.get_coins(user_id)
+        await message.reply(
+            f"🎡 Выпало: {result_emoji}\n\n"
+            f"❌ Не повезло!\n"
+            f"💸 Ставка: {bet} DC на {chosen_emoji}\n"
+            f"🪙 Баланс: {new_balance} DC"
+        )
+
+
+@router.message(Command("dice"))
+async def cmd_dice(message: Message) -> None:
+    if message.chat.id != MAIN_CHAT_ID:
+        return
+    if await db.is_banned(message.from_user.id):
+        await message.reply(BAN_MESSAGE)
+        return
+    user_id = message.from_user.id
+
+    if user_id in active_games:
+        await message.reply("🎰 У тебя уже есть активная игра! Сначала заверши её.")
+        return
+
+    args = message.text.split()
+    if len(args) < 3:
+        await message.reply("Использование: /dice [число 1-6] [ставка]\nПример: /dice 3 50")
+        return
+
+    try:
+        number = int(args[1])
+        bet    = int(args[2])
+    except ValueError:
+        await message.reply("❌ Число и ставка должны быть числами.")
+        return
+
+    if number < 1 or number > 6:
+        await message.reply("❌ Число должно быть от 1 до 6.")
+        return
+    if bet < CASINO_MIN_BET:
+        await message.reply(f"❌ Минимальная ставка: {CASINO_MIN_BET} DC")
+        return
+
+    balance, _ = await db.get_coins(user_id)
+    if balance < bet:
+        await message.reply(f"❌ Недостаточно D-COINS!\n🪙 Твой баланс: {balance} DC")
+        return
+
+    await db.remove_coins(user_id, bet)
+
+    rolled = random.randint(1, 6)
+
+    if rolled == number:
+        win = bet * 2
+        await db.add_coins(user_id, win)
+        new_balance, _ = await db.get_coins(user_id)
+        await message.reply(
+            f"🎲 Выпало: {rolled}\n\n"
+            f"✅ Угадал!\n"
+            f"💸 Ставка: {bet} DC на {number}\n"
+            f"🏆 Выигрыш: {win} DC\n"
+            f"🪙 Баланс: {new_balance} DC"
+        )
+    else:
+        new_balance, _ = await db.get_coins(user_id)
+        await message.reply(
+            f"🎲 Выпало: {rolled}\n\n"
+            f"❌ Не угадал! (ты выбрал {number})\n"
+            f"💸 Ставка: {bet} DC\n"
+            f"🪙 Баланс: {new_balance} DC"
+        )
+
+
+# =========================
+# GROUP — /exchange
+# =========================
+
+@router.message(Command("exchange"))
+async def cmd_exchange(message: Message) -> None:
+    if message.chat.id != MAIN_CHAT_ID:
+        return
+    if await db.is_banned(message.from_user.id):
+        await message.reply(BAN_MESSAGE)
+        return
+    balance, _ = await db.get_coins(message.from_user.id)
+    await message.reply(
+        f"💱 Обмен D-COINS\n\n"
+        f"🪙 Твой баланс: {balance} DC\n\n"
+        f"Выбери что хочешь получить:",
+        reply_markup=exchange_keyboard(balance)
+    )
+
+@router.callback_query(F.data == "exch_chance")
+async def exch_chance(callback: CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    if await db.is_banned(user_id):
+        await callback.answer(BAN_MESSAGE, show_alert=True)
+        return
+    balance, _ = await db.get_coins(user_id)
+    if balance < EXCHANGE_CHANCE:
+        await callback.answer(f"❌ Нужно {EXCHANGE_CHANCE} DC, у тебя {balance}", show_alert=True)
+        return
+    await db.remove_coins(user_id, EXCHANGE_CHANCE)
+    chance, msg_count, last_bonus = await db.get_user(user_id, MAIN_CHAT_ID)
+    new_chance = min(round(chance + 1.0, 3), MAX_CHANCE)
+    name = await db.get_user_name(user_id)
+    await db.update_user(user_id, MAIN_CHAT_ID, name, new_chance, msg_count, last_bonus)
+    new_balance, _ = await db.get_coins(user_id)
+    await callback.message.edit_text(
+        f"✅ Обменял {EXCHANGE_CHANCE} DC на +1% шанса\n"
+        f"🪙 Баланс: {new_balance} DC\n"
+        f"📈 Новый шанс: {new_chance:.3f}%",
+        reply_markup=exchange_keyboard(new_balance)
+    )
+    await callback.answer()
+
+async def process_exchange_gift(callback: CallbackQuery, cost: int, gift_key: int, reward_label: str, bot: Bot) -> None:
+    user_id = callback.from_user.id
+    if await db.is_banned(user_id):
+        await callback.answer(BAN_MESSAGE, show_alert=True)
+        return
+    balance, _ = await db.get_coins(user_id)
+    if balance < cost:
+        await callback.answer(f"❌ Нужно {cost} DC, у тебя {balance}", show_alert=True)
+        return
+    await db.remove_coins(user_id, cost)
+    name = await db.get_user_name(user_id)
+    new_balance, _ = await db.get_coins(user_id)
+    gift_ids = REF_GIFT_IDS.get(gift_key, [])
+    gift_id  = random.choice(gift_ids) if gift_ids else None
+    if gift_id:
+        try:
+            star_balance = await bot.get_my_star_balance()
+            stars_needed = int(reward_label.replace("⭐", "").strip())
+            if star_balance.amount < stars_needed:
+                await db.add_pending_gift(user_id, name, gift_id, f"обмен {cost} DC → {reward_label}")
+                await bot.send_message(ADMIN_ID,
+                    f"⚠️ Недостаточно звёзд!\n\n👤 {name} ({user_id})\n💫 {star_balance.amount}⭐\nДобавлен в /pending"
+                )
+                await callback.message.edit_text(
+                    f"✅ Обменял {cost} DC на подарок {reward_label}\n"
+                    f"🪙 Баланс: {new_balance} DC\n"
+                    f"⏳ Подарок будет отправлен как только пополним баланс.",
+                    reply_markup=exchange_keyboard(new_balance)
+                )
+            else:
+                await bot.send_gift(user_id=user_id, gift_id=gift_id)
+                await send_log(bot, f"🎁 Обмен монет\n\n{name} ({user_id})\n{cost} DC → {reward_label}")
+                await callback.message.edit_text(
+                    f"✅ Обменял {cost} DC на подарок {reward_label}\n"
+                    f"🪙 Баланс: {new_balance} DC\n"
+                    f"🎁 Подарок отправлен в личку!",
+                    reply_markup=exchange_keyboard(new_balance)
+                )
+        except Exception as e:
+            await db.add_pending_gift(user_id, name, gift_id, f"обмен {cost} DC → {reward_label} — ошибка: {e}")
+            await callback.message.edit_text(
+                f"✅ Обменял {cost} DC на подарок {reward_label}\n"
+                f"🪙 Баланс: {new_balance} DC\n"
+                f"⏳ Подарок будет отправлен позже.",
+                reply_markup=exchange_keyboard(new_balance)
+            )
+    await callback.answer()
+
+@router.callback_query(F.data == "exch_gift_15")
+async def exch_gift_15(callback: CallbackQuery, bot: Bot) -> None:
+    await process_exchange_gift(callback, EXCHANGE_GIFT_15, 5, "15⭐", bot)
+
+@router.callback_query(F.data == "exch_gift_25")
+async def exch_gift_25(callback: CallbackQuery, bot: Bot) -> None:
+    await process_exchange_gift(callback, EXCHANGE_GIFT_25, 10, "25⭐", bot)
+
+@router.callback_query(F.data == "exch_gift_50")
+async def exch_gift_50(callback: CallbackQuery, bot: Bot) -> None:
+    await process_exchange_gift(callback, EXCHANGE_GIFT_50, 15, "50⭐", bot)
+
+@router.callback_query(F.data == "exch_gift_100")
+async def exch_gift_100(callback: CallbackQuery, bot: Bot) -> None:
+    await process_exchange_gift(callback, EXCHANGE_GIFT_100, 20, "100⭐", bot)
 
 # =========================
 # NEW MEMBERS
@@ -1222,9 +1632,8 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot) -> None:
     if inviter_id == member.id:
         return
     await db.add_referral(member.id, inviter_id)
-    logger.info("Новый реферал: %s пришёл по ссылке %s (владелец %s)", member.id, link_str, inviter_id)
     await send_log(bot,
-        f"🔗 Новый реферал зафиксирован\n\n"
+        f"🔗 Новый реферал\n\n"
         f"👤 Пришёл: {display_name(member)} ({member.id})\n"
         f"👥 Пригласил: {inviter_id}\n"
         f"⏳ Нужно сообщений: {VALID_REF_MESSAGES}"
@@ -1269,6 +1678,11 @@ async def group_handler(message: Message, bot: Bot) -> None:
     await db.increment_daily(user_id, message.chat.id, name)
 
     chance, msg_count, last_bonus = await db.get_user(user_id, message.chat.id)
+    is_vip = await db.is_vip(user_id)
+
+    # Монеты за сообщение
+    coins_earned = COINS_VIP_PER_MSG if is_vip else COINS_PER_MSG
+    await db.add_coins(user_id, coins_earned)
 
     # REF VALIDATION
     ref_data = await db.get_referral(user_id)
@@ -1286,13 +1700,13 @@ async def group_handler(message: Message, bot: Bot) -> None:
                 await reward_inviter(bot, inviter_id)
 
     # WIN SYSTEM
-    is_vip   = await db.is_vip(user_id)
-    msg_step = 2 if is_vip else 1
+    msg_step = 1
+    chance_step = 0.003 if is_vip else 0.002  # VIP x1.5
 
     if msg_count < 150:
         is_win = False
     else:
-        is_win = chance >= MAX_CHANCE or random.uniform(0, 500) <= chance
+        is_win = chance >= MAX_CHANCE or random.uniform(0, 1000) <= chance
 
     if is_win:
         await db.add_win(user_id, message.chat.id, name, chance)
@@ -1307,36 +1721,30 @@ async def group_handler(message: Message, bot: Bot) -> None:
         try:
             star_balance = await bot.get_my_star_balance()
             if star_balance.amount < 15:
-                await db.add_pending_gift(user_id, name, "5170233102089322756", "победа")
-                await send_log(bot, f"⚠️ Недостаточно звёзд!\n\nБаланс: {star_balance.amount}⭐\nПобедитель: {name} ({user_id})\nДобавлен в /pending")
+                await db.add_pending_gift(user_id, name, WIN_GIFT_IDS[0], "победа")
+                await send_log(bot, f"⚠️ Недостаточно звёзд!\n\nБаланс: {star_balance.amount}⭐\n{name} ({user_id})\nДобавлен в /pending")
                 await bot.send_message(ADMIN_ID,
-                    f"⚠️ Недостаточно звёзд!\n\n💫 Баланс: {star_balance.amount}⭐\n👤 {name} ({user_id})\n\nПодарок добавлен в /pending"
+                    f"⚠️ Недостаточно звёзд!\n\n💫 {star_balance.amount}⭐\n👤 {name} ({user_id})\nДобавлен в /pending"
                 )
             else:
                 try:
                     await bot.send_gift(user_id=user_id, gift_id=random.choice(WIN_GIFT_IDS))
-                    await send_log(bot, f"🎁 Подарок отправлен\n\n{name} ({user_id})\n💫 Остаток: {star_balance.amount - 15}⭐")
-                    await bot.send_message(ADMIN_ID,
-                        f"✅ Подарок успешно отправлен!\n\n👤 {name} ({user_id})\n💫 Остаток: {star_balance.amount - 15}⭐"
-                    )
+                    await send_log(bot, f"🎁 Подарок отправлен\n\n{name} ({user_id})\n💫 {star_balance.amount - 15}⭐")
+                    await bot.send_message(ADMIN_ID, f"✅ Подарок отправлен!\n\n👤 {name} ({user_id})\n💫 {star_balance.amount - 15}⭐")
                 except Exception as e:
                     error_text = str(e)
-                    await db.add_pending_gift(user_id, name, "5170233102089322756", f"ошибка: {error_text}")
-                    await send_log(bot, f"❌ Ошибка отправки подарка\n\n{name} ({user_id})\n{error_text}\nДобавлен в /pending")
-                    await bot.send_message(ADMIN_ID,
-                        f"❌ Не удалось отправить подарок!\n\n👤 {name} ({user_id})\n📛 {error_text}\n\nДобавлен в /pending"
-                    )
+                    await db.add_pending_gift(user_id, name, WIN_GIFT_IDS[0], f"ошибка: {error_text}")
+                    await send_log(bot, f"❌ Ошибка подарка\n\n{name} ({user_id})\n{error_text}")
+                    await bot.send_message(ADMIN_ID, f"❌ Ошибка подарка\n\n👤 {name} ({user_id})\n📛 {error_text}\nДобавлен в /pending")
         except Exception as e:
             logger.warning("get_my_star_balance failed: %s", e)
-            await db.add_pending_gift(user_id, name, "5170233102089322756", "не удалось проверить баланс")
-            await bot.send_message(ADMIN_ID,
-                f"⚠️ Не удалось проверить баланс звёзд\n\n👤 {name} ({user_id})\nДобавлен в /pending"
-            )
+            await db.add_pending_gift(user_id, name, WIN_GIFT_IDS[0], "не удалось проверить баланс")
+            await bot.send_message(ADMIN_ID, f"⚠️ Не удалось проверить баланс\n\n👤 {name} ({user_id})\nДобавлен в /pending")
 
         await db.update_user(user_id, message.chat.id, name, START_CHANCE, 0, last_bonus)
     else:
-        new_chance = min(round(chance + (STEP * msg_step), 3), MAX_CHANCE)
-        await db.update_user(user_id, message.chat.id, name, new_chance, msg_count + msg_step, last_bonus)
+        new_chance = min(round(chance + chance_step, 3), MAX_CHANCE)
+        await db.update_user(user_id, message.chat.id, name, new_chance, msg_count + 1, last_bonus)
 
 # =========================
 # DAILY RESET TASK
@@ -1347,8 +1755,7 @@ async def daily_reset_task(bot: Bot) -> None:
     while True:
         now = datetime.now(tz)
         next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        wait_seconds = (next_midnight - now).total_seconds()
-        await asyncio.sleep(wait_seconds)
+        await asyncio.sleep((next_midnight - now).total_seconds())
         await db.clear_old_daily()
         await send_log(bot, "🗑 Дневная статистика сброшена (00:00 МСК)")
 
@@ -1364,6 +1771,7 @@ async def main() -> None:
     dp  = Dispatcher()
     dp.include_router(router)
     asyncio.create_task(daily_reset_task(bot))
+    asyncio.create_task(casino_timeout_checker(bot))
     logger.info("Бот запущен")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
