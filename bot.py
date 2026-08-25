@@ -2398,7 +2398,7 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot) -> None:
 @router.message(F.chat.type.in_({"group", "supergroup"}))
 async def group_handler(message: Message, bot: Bot) -> None:
     if message.chat.id != MAIN_CHAT_ID:
-        if message.chat.id != LOG_CHAT_ID:
+        if message.chat.id not in {LOG_CHAT_ID, GAME_LOG_CHAT_ID}:
             try:
                 await bot.leave_chat(message.chat.id)
             except Exception as e:
