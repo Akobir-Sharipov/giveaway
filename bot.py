@@ -111,6 +111,13 @@ class Database:
                     PRIMARY KEY (user_id, chat_id)
                 )
             """)
+            # Username нужен для /transfer @username.
+            # Добавляем колонку безопасно для уже существующей базы.
+            async with db.execute("PRAGMA table_info(user_stats)") as cur:
+                columns = [row[1] for row in await cur.fetchall()]
+            if "username" not in columns:
+                await db.execute("ALTER TABLE user_stats ADD COLUMN username TEXT")
+
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS referrals (
                     invited_user_id INTEGER PRIMARY KEY,
@@ -268,6 +275,76 @@ class Database:
             ) as cur:
                 row = await cur.fetchone()
         return row[0] if row else str(user_id)
+
+    async def set_username(
+        self,
+        user_id: int,
+        username: str | None,
+        chat_id: int = MAIN_CHAT_ID,
+        user_name: str | None = None,
+    ) -> None:
+        normalized = username.lower().lstrip("@") if username else None
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """
+                INSERT INTO user_stats (user_id, chat_id, user_name, username)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, chat_id) DO UPDATE SET
+                    username = excluded.username,
+                    user_name = COALESCE(excluded.user_name, user_stats.user_name)
+                """,
+                (user_id, chat_id, user_name or str(user_id), normalized)
+            )
+            await db.commit()
+
+    async def find_user_by_username(self, username: str):
+        username = username.lower().lstrip("@")
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT user_id, user_name FROM user_stats WHERE username=? AND chat_id=? LIMIT 1",
+                (username, MAIN_CHAT_ID)
+            ) as cur:
+                return await cur.fetchone()
+
+    async def transfer_coins(self, sender_id: int, recipient_id: int, amount: int):
+        if amount <= 0 or sender_id == recipient_id:
+            return False, None, None
+
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                # Создаём баланс с начальным количеством, если пользователь ещё не получал монеты.
+                await db.execute(
+                    "INSERT OR IGNORE INTO coins (user_id, balance) VALUES (?, ?)",
+                    (sender_id, COINS_START)
+                )
+                await db.execute(
+                    "INSERT OR IGNORE INTO coins (user_id, balance) VALUES (?, ?)",
+                    (recipient_id, COINS_START)
+                )
+
+                cur = await db.execute(
+                    "UPDATE coins SET balance=balance-? WHERE user_id=? AND balance>=?",
+                    (amount, sender_id, amount)
+                )
+                if cur.rowcount != 1:
+                    await db.rollback()
+                    return False, None, None
+
+                await db.execute(
+                    "UPDATE coins SET balance=balance+? WHERE user_id=?",
+                    (amount, recipient_id)
+                )
+                await db.commit()
+
+                async with db.execute("SELECT balance FROM coins WHERE user_id=?", (sender_id,)) as cur:
+                    sender_row = await cur.fetchone()
+                async with db.execute("SELECT balance FROM coins WHERE user_id=?", (recipient_id,)) as cur:
+                    recipient_row = await cur.fetchone()
+                return True, sender_row[0], recipient_row[0]
+            except Exception:
+                await db.rollback()
+                raise
 
     async def get_top(self, chat_id: int, limit: int = 5) -> list:
         async with aiosqlite.connect(self.path) as db:
@@ -1248,13 +1325,118 @@ async def cmd_cointop(message: Message) -> None:
 
 @router.message(Command("coins"))
 async def cmd_coins(message: Message) -> None:
-    if message.chat.id != MAIN_CHAT_ID:
+    if message.chat.type != "private" and message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
         await message.reply(BAN_MESSAGE)
         return
     balance, _ = await db.get_coins(message.from_user.id)
     await message.reply(f"🪙 Твой баланс: {balance} D-COINS")
+
+
+# =========================
+# /transfer — GROUP + PRIVATE
+# =========================
+
+@router.message(Command("transfer"))
+async def cmd_transfer(message: Message, bot: Bot) -> None:
+    sender_id = message.from_user.id
+
+    if await db.is_banned(sender_id):
+        await message.reply(BAN_MESSAGE)
+        return
+
+    # Запоминаем username отправителя, если он уже есть в user_stats.
+    if message.chat.id == MAIN_CHAT_ID and message.from_user.username:
+        await db.set_username(sender_id, message.from_user.username, MAIN_CHAT_ID, display_name(message.from_user))
+
+    args = message.text.split()
+    target_id = None
+    target_name = None
+
+    # Вариант 1: /transfer @username 100
+    if len(args) == 3 and args[1].startswith("@"):
+        username = args[1][1:].strip()
+        try:
+            amount = int(args[2])
+        except ValueError:
+            await message.reply("❌ Сумма должна быть целым числом.")
+            return
+
+        target = await db.find_user_by_username(username)
+        if not target:
+            await message.reply(
+                "❌ Пользователь с таким username не найден.\n"
+                "Пользователь должен хотя бы один раз написать в основной группе, "
+                "чтобы бот знал его ID."
+            )
+            return
+        target_id, target_name = target
+
+    # Вариант 2: ответ на сообщение — /transfer 100
+    elif len(args) == 2 and message.reply_to_message and message.reply_to_message.from_user:
+        try:
+            amount = int(args[1])
+        except ValueError:
+            await message.reply("❌ Сумма должна быть целым числом.")
+            return
+
+        target_user = message.reply_to_message.from_user
+        target_id = target_user.id
+        target_name = display_name(target_user)
+
+        if target_user.username:
+            await db.set_username(target_id, target_user.username, MAIN_CHAT_ID, target_name)
+
+    else:
+        await message.reply(
+            "❌ Использование:\n"
+            "/transfer @username сумма\n"
+            "или ответь на сообщение командой /transfer сумма"
+        )
+        return
+
+    if amount <= 0:
+        await message.reply("❌ Сумма должна быть больше 0 D-COINS.")
+        return
+
+    if target_id == sender_id:
+        await message.reply("❌ Нельзя переводить D-COINS самому себе.")
+        return
+
+    if await db.is_banned(target_id):
+        await message.reply("❌ Нельзя переводить D-COINS заблокированному пользователю.")
+        return
+
+    ok, sender_balance, recipient_balance = await db.transfer_coins(sender_id, target_id, amount)
+    if not ok:
+        balance, _ = await db.get_coins(sender_id)
+        await message.reply(
+            f"❌ Недостаточно D-COINS.\n🪙 Твой баланс: {balance} DC"
+        )
+        return
+
+    sender_name = display_name(message.from_user)
+    if not target_name:
+        target_name = await db.get_user_name(target_id)
+
+    await message.reply(
+        f"✅ Перевод выполнен!\n\n"
+        f"👤 Получатель: {target_name}\n"
+        f"💸 Переведено: {amount} DC\n"
+        f"🪙 Твой баланс: {sender_balance} DC"
+    )
+
+    try:
+        await bot.send_message(
+            target_id,
+            f"💰 Тебе перевели {amount} D-COINS!\n\n"
+            f"👤 От: {sender_name}\n"
+            f"🪙 Твой баланс: {recipient_balance} DC"
+        )
+    except Exception as e:
+        logger.info("Не удалось уведомить получателя %s: %s", target_id, e)
+
 
 @router.message(Command("daytop"))
 async def cmd_daytop(message: Message) -> None:
@@ -1315,7 +1497,7 @@ async def cmd_bonus(message: Message) -> None:
 
 @router.message(Command("slots"))
 async def cmd_slots(message: Message) -> None:
-    if message.chat.id != MAIN_CHAT_ID:
+    if message.chat.type != "private" and message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
         await message.reply(BAN_MESSAGE)
@@ -1374,7 +1556,7 @@ async def cmd_slots(message: Message) -> None:
 
 @router.message(Command("roulette"))
 async def cmd_roulette(message: Message) -> None:
-    if message.chat.id != MAIN_CHAT_ID:
+    if message.chat.type != "private" and message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
         await message.reply(BAN_MESSAGE)
@@ -1439,7 +1621,7 @@ async def cmd_roulette(message: Message) -> None:
 
 @router.message(Command("dice"))
 async def cmd_dice(message: Message) -> None:
-    if message.chat.id != MAIN_CHAT_ID:
+    if message.chat.type != "private" and message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
         await message.reply(BAN_MESSAGE)
@@ -1505,7 +1687,7 @@ async def cmd_dice(message: Message) -> None:
 
 @router.message(Command("exchange"))
 async def cmd_exchange(message: Message) -> None:
-    if message.chat.id != MAIN_CHAT_ID:
+    if message.chat.type != "private" and message.chat.id != MAIN_CHAT_ID:
         return
     if await db.is_banned(message.from_user.id):
         await message.reply(BAN_MESSAGE)
@@ -1665,6 +1847,9 @@ async def group_handler(message: Message, bot: Bot) -> None:
         name = message.sender_chat.title or str(message.sender_chat.id)
     else:
         return
+
+    if message.from_user and message.from_user.username:
+        await db.set_username(user_id, message.from_user.username, message.chat.id, name)
 
     cache_key = (user_id, message.chat.id)
 
