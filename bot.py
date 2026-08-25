@@ -51,13 +51,14 @@ COINS_BONUS_CD     = 43200
 # Казино
 CASINO_MIN_BET     = 5
 CASINO_TIMEOUT     = 300  # 5 минут
+CASINO_BET_COOLDOWN = 10  # секунд между ставками одного пользователя
 
 # Обмен
-EXCHANGE_CHANCE    = 1000  # 1 000 DC = +1% шанса
-EXCHANGE_GIFT_15   = 1500
-EXCHANGE_GIFT_25   = 2000
-EXCHANGE_GIFT_50   = 3000
-EXCHANGE_GIFT_100  = 5000
+EXCHANGE_CHANCE    = 5000   # 5 000 DC = +1% шанса
+EXCHANGE_GIFT_15   = 15000
+EXCHANGE_GIFT_25   = 25000
+EXCHANGE_GIFT_50   = 50000
+EXCHANGE_GIFT_100  = 100000
 
 BAN_MESSAGE = "🚫 Вы заблокированы и не можете участвовать в розыгрышах в боте."
 
@@ -179,6 +180,23 @@ class Database:
                     user_id         INTEGER PRIMARY KEY,
                     balance         INTEGER DEFAULT 10,
                     last_coin_bonus REAL    DEFAULT 0
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS promo_codes (
+                    code       TEXT PRIMARY KEY COLLATE NOCASE,
+                    reward     INTEGER NOT NULL,
+                    max_uses   INTEGER,
+                    uses       INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS promo_activations (
+                    code       TEXT NOT NULL COLLATE NOCASE,
+                    user_id    INTEGER NOT NULL,
+                    activated_at REAL NOT NULL,
+                    PRIMARY KEY (code, user_id)
                 )
             """)
             await db.commit()
@@ -613,6 +631,77 @@ class Database:
             """, (MAIN_CHAT_ID, limit)) as cur:
                 return await cur.fetchall()
 
+    # --------------------------------------------------
+    # PROMO CODES
+    # --------------------------------------------------
+
+    async def create_promo(self, code: str, reward: int, max_uses: int | None) -> bool:
+        if reward <= 0 or (max_uses is not None and max_uses <= 0):
+            return False
+        async with aiosqlite.connect(self.path) as db:
+            try:
+                await db.execute(
+                    "INSERT INTO promo_codes (code, reward, max_uses, created_at) VALUES (?, ?, ?, ?)",
+                    (code, reward, max_uses, time.time()),
+                )
+                await db.commit()
+                return True
+            except aiosqlite.IntegrityError:
+                return False
+
+    async def delete_promo(self, code: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute("DELETE FROM promo_codes WHERE code=?", (code,))
+            await db.commit()
+        return cursor.rowcount == 1
+
+    async def get_promos(self) -> list:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT code, reward, max_uses, uses FROM promo_codes ORDER BY created_at DESC"
+            ) as cur:
+                return await cur.fetchall()
+
+    async def redeem_promo(self, code: str, user_id: int):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                async with db.execute(
+                    "SELECT reward, max_uses, uses FROM promo_codes WHERE code=?", (code,)
+                ) as cur:
+                    promo = await cur.fetchone()
+                if not promo:
+                    await db.rollback()
+                    return "not_found", None, None, None
+
+                reward, max_uses, uses = promo
+                async with db.execute(
+                    "SELECT 1 FROM promo_activations WHERE code=? AND user_id=?", (code, user_id)
+                ) as cur:
+                    already_used = await cur.fetchone()
+                if already_used:
+                    await db.rollback()
+                    return "already_used", None, None, None
+                if max_uses is not None and uses >= max_uses:
+                    await db.rollback()
+                    return "limit_reached", None, None, None
+
+                await db.execute(
+                    "INSERT INTO promo_activations (code, user_id, activated_at) VALUES (?, ?, ?)",
+                    (code, user_id, time.time()),
+                )
+                await db.execute(
+                    "INSERT INTO coins (user_id, balance) VALUES (?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
+                    (user_id, COINS_START + reward, reward),
+                )
+                await db.execute("UPDATE promo_codes SET uses = uses + 1 WHERE code=?", (code,))
+                await db.commit()
+                return "success", reward, uses + 1, max_uses
+            except Exception:
+                await db.rollback()
+                raise
+
 
 db = Database(os.getenv("DB_PATH", "activity.db"))
 
@@ -736,6 +825,7 @@ async def casino_timeout_checker(bot: Bot) -> None:
 
 router    = Router()
 cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=COOLDOWN_SECONDS)
+casino_bet_cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=CASINO_BET_COOLDOWN)
 
 def start_keyboard():
     buttons = [
@@ -1076,6 +1166,57 @@ async def cmd_removecoins(message: Message) -> None:
     else:
         await message.answer(f"❌ Недостаточно монет\n👤 {name} ({user_id})\n🪙 Баланс: {balance} D-COINS")
 
+@router.message(Command("createpromo"), F.chat.type == "private")
+async def cmd_createpromo(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) not in (3, 4):
+        await message.answer("Использование: /createpromo КОД награда_DC [лимит]\nЛимит не указывай для безлимитного промокода.")
+        return
+    code = args[1].upper()
+    if not 3 <= len(code) <= 32 or not all(char.isalnum() or char in "_-" for char in code):
+        await message.answer("❌ Код: от 3 до 32 символов; разрешены латинские буквы, цифры, _ и -.")
+        return
+    try:
+        reward = int(args[2])
+        max_uses = int(args[3]) if len(args) == 4 else None
+    except ValueError:
+        await message.answer("❌ Награда и лимит должны быть целыми числами.")
+        return
+    if not await db.create_promo(code, reward, max_uses):
+        await message.answer("❌ Не удалось создать промокод: проверь значения или выбери другой код.")
+        return
+    limit_text = str(max_uses) if max_uses is not None else "без лимита"
+    await message.answer(f"✅ Промокод {code} создан.\n🎁 Награда: {reward} DC\n👥 Активаций: {limit_text}")
+
+@router.message(Command("deletepromo"), F.chat.type == "private")
+async def cmd_deletepromo(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: /deletepromo КОД")
+        return
+    if await db.delete_promo(args[1].upper()):
+        await message.answer(f"✅ Промокод {args[1].upper()} удалён.")
+    else:
+        await message.answer("❌ Промокод не найден.")
+
+@router.message(Command("promos"), F.chat.type == "private")
+async def cmd_promos(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    promos = await db.get_promos()
+    if not promos:
+        await message.answer("📭 Активных промокодов нет.")
+        return
+    text = "🎟 Активные промокоды:\n\n"
+    for code, reward, max_uses, uses in promos:
+        limit_text = f"{uses}/{max_uses}" if max_uses is not None else f"{uses}/∞"
+        text += f"{code} — {reward} DC ({limit_text})\n"
+    await message.answer(text)
+
 @router.message(Command("addrefs"), F.chat.type == "private")
 async def cmd_addrefs(message: Message, bot: Bot) -> None:
     if message.from_user.id != ADMIN_ID:
@@ -1352,6 +1493,28 @@ async def cmd_coins(message: Message) -> None:
     balance, _ = await db.get_coins(message.from_user.id)
     await message.reply(f"🪙 Твой баланс: {balance} D-COINS")
 
+@router.message(Command("promo"), F.chat.type == "private")
+async def cmd_promo(message: Message) -> None:
+    if await db.is_banned(message.from_user.id):
+        await message.answer(BAN_MESSAGE)
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: /promo КОД")
+        return
+    code = args[1].upper()
+    status, reward, uses, max_uses = await db.redeem_promo(code, message.from_user.id)
+    if status == "success":
+        balance, _ = await db.get_coins(message.from_user.id)
+        limit_text = f"{uses}/{max_uses}" if max_uses is not None else f"{uses}/∞"
+        await message.answer(f"✅ Промокод активирован!\n🎁 Получено: {reward} DC\n🪙 Баланс: {balance} DC\n👥 Активаций: {limit_text}")
+    elif status == "already_used":
+        await message.answer("❌ Ты уже активировал этот промокод.")
+    elif status == "limit_reached":
+        await message.answer("❌ Лимит активаций этого промокода исчерпан.")
+    else:
+        await message.answer("❌ Промокод не найден или уже отключён.")
+
 
 # =========================
 # /transfer — GROUP + PRIVATE
@@ -1545,7 +1708,14 @@ async def cmd_slots(message: Message) -> None:
         await message.reply(f"❌ Недостаточно D-COINS!\n🪙 Твой баланс: {balance} DC")
         return
 
-    await db.remove_coins(user_id, bet)
+    if user_id in casino_bet_cooldowns:
+        await message.reply(f"⏳ Следующая ставка будет доступна через {CASINO_BET_COOLDOWN} сек.")
+        return
+    casino_bet_cooldowns[user_id] = True
+    if not await db.remove_coins(user_id, bet):
+        casino_bet_cooldowns.pop(user_id, None)
+        await message.reply("❌ Недостаточно D-COINS!")
+        return
     balance_after, _ = await db.get_coins(user_id)
 
     SYMBOLS = ["🍒", "🍋", "🍊", "🍇", "⭐", "💎"]
@@ -1610,7 +1780,14 @@ async def cmd_roulette(message: Message) -> None:
         await message.reply(f"❌ Недостаточно D-COINS!\n🪙 Твой баланс: {balance} DC")
         return
 
-    await db.remove_coins(user_id, bet)
+    if user_id in casino_bet_cooldowns:
+        await message.reply(f"⏳ Следующая ставка будет доступна через {CASINO_BET_COOLDOWN} сек.")
+        return
+    casino_bet_cooldowns[user_id] = True
+    if not await db.remove_coins(user_id, bet):
+        casino_bet_cooldowns.pop(user_id, None)
+        await message.reply("❌ Недостаточно D-COINS!")
+        return
 
     result_color = random.choice(["red"] * 18 + ["black"] * 18 + ["green"])
     emoji_map = {"red": "🔴", "black": "⚫", "green": "🟢"}
@@ -1675,7 +1852,14 @@ async def cmd_dice(message: Message) -> None:
         await message.reply(f"❌ Недостаточно D-COINS!\n🪙 Твой баланс: {balance} DC")
         return
 
-    await db.remove_coins(user_id, bet)
+    if user_id in casino_bet_cooldowns:
+        await message.reply(f"⏳ Следующая ставка будет доступна через {CASINO_BET_COOLDOWN} сек.")
+        return
+    casino_bet_cooldowns[user_id] = True
+    if not await db.remove_coins(user_id, bet):
+        casino_bet_cooldowns.pop(user_id, None)
+        await message.reply("❌ Недостаточно D-COINS!")
+        return
 
     rolled = random.randint(1, 6)
 
@@ -1729,7 +1913,10 @@ async def exch_chance(callback: CallbackQuery) -> None:
     if balance < EXCHANGE_CHANCE:
         await callback.answer(f"❌ Нужно {EXCHANGE_CHANCE} DC, у тебя {balance}", show_alert=True)
         return
-    await db.remove_coins(user_id, EXCHANGE_CHANCE)
+    if not await db.remove_coins(user_id, EXCHANGE_CHANCE):
+        balance, _ = await db.get_coins(user_id)
+        await callback.answer(f"❌ Нужно {EXCHANGE_CHANCE} DC, у тебя {balance}", show_alert=True)
+        return
     chance, msg_count, last_bonus = await db.get_user(user_id, MAIN_CHAT_ID)
     new_chance = min(round(chance + 1.0, 3), MAX_CHANCE)
     name = await db.get_user_name(user_id)
@@ -1893,12 +2080,14 @@ async def group_handler(message: Message, bot: Bot) -> None:
     if not msg_text or msg_text.startswith("/"):
         return
 
-    if message.from_user and not message.from_user.is_bot:
-        user_id = message.from_user.id
-        name = display_name(message.from_user)
-    elif message.sender_chat:
+    # Сообщение, отправленное от имени канала, должно учитываться за канал.
+    # Проверяем sender_chat первым: Telegram может одновременно передать from_user.
+    if message.sender_chat:
         user_id = message.sender_chat.id
         name = message.sender_chat.title or str(message.sender_chat.id)
+    elif message.from_user and not message.from_user.is_bot:
+        user_id = message.from_user.id
+        name = display_name(message.from_user)
     else:
         return
 
@@ -2021,4 +2210,3 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
-    asyncio.run(main())
