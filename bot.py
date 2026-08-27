@@ -36,6 +36,8 @@ ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
 # Обязательная подписка перед открытием меню бота.
 REQUIRED_CHANNEL = "@d_coins_channel"
 REQUIRED_CHANNEL_URL = "https://t.me/d_coins_channel"
+# Можно переопределить отдельным ID/username в Railway, если промокоды нужны в другом канале.
+PROMO_CHANNEL_ID = os.getenv("PROMO_CHANNEL_ID", REQUIRED_CHANNEL)
 
 COOLDOWN_SECONDS   = 1
 START_CHANCE       = 0.1
@@ -933,6 +935,14 @@ async def send_game_log(bot: Bot, text: str) -> None:
     except Exception as e:
         logger.warning("send_game_log failed: %s", e)
 
+async def publish_promo(bot: Bot, text: str) -> bool:
+    try:
+        await bot.send_message(PROMO_CHANNEL_ID, text)
+        return True
+    except Exception as e:
+        logger.warning("publish_promo failed: %s", e)
+        return False
+
 
 async def reward_inviter(bot: Bot, inviter_id: int) -> None:
     inv_chance, inv_msgs, inv_bonus = await db.get_user(inviter_id, MAIN_CHAT_ID)
@@ -1526,7 +1536,7 @@ async def cmd_removecoins(message: Message) -> None:
         await message.answer(f"❌ Недостаточно монет\n👤 {name} ({user_id})\n🪙 Баланс: {balance} D-COINS")
 
 @router.message(Command("createpromo"), F.chat.type == "private")
-async def cmd_createpromo(message: Message) -> None:
+async def cmd_createpromo(message: Message, bot: Bot) -> None:
     if message.from_user.id != ADMIN_ID:
         return
     args = message.text.split()
@@ -1548,6 +1558,15 @@ async def cmd_createpromo(message: Message) -> None:
         return
     limit_text = str(max_uses) if max_uses is not None else "без лимита"
     await message.answer(f"✅ Промокод {code} создан.\n🎁 Награда: {reward} DC\n👥 Активаций: {limit_text}")
+    if not await publish_promo(
+        bot,
+        f"🎁 Новый промокод!\n\n"
+        f"🔑 Код: <code>{code}</code>\n"
+        f"🪙 Награда: {reward:,} DC\n"
+        f"👥 Активаций: {limit_text}\n\n"
+        f"Активировать в боте: промо {code}".replace(",", " "),
+    ):
+        await message.answer("⚠️ Промокод создан, но не отправлен в канал. Проверь, что бот — администратор канала.")
 
 @router.message(Command("deletepromo"), F.chat.type == "private")
 async def cmd_deletepromo(message: Message) -> None:
@@ -1563,7 +1582,7 @@ async def cmd_deletepromo(message: Message) -> None:
         await message.answer("❌ Промокод не найден.")
 
 @router.message(Command("createcasepromo"), F.chat.type == "private")
-async def cmd_createcasepromo(message: Message) -> None:
+async def cmd_createcasepromo(message: Message, bot: Bot) -> None:
     if message.from_user.id != ADMIN_ID:
         return
     args = message.text.split()
@@ -1586,6 +1605,15 @@ async def cmd_createcasepromo(message: Message) -> None:
         return
     limit_text = str(max_uses) if max_uses is not None else "без лимита"
     await message.answer(f"✅ Промокод {code} создан.\n🎟 Кейс: {CASES[case_id]['title']} × {case_count}\n👥 Активаций: {limit_text}")
+    if not await publish_promo(
+        bot,
+        f"🎁 Новый промокод!\n\n"
+        f"🔑 Код: <code>{code}</code>\n"
+        f"🎟 Награда: {CASES[case_id]['title']} × {case_count}\n"
+        f"👥 Активаций: {limit_text}\n\n"
+        f"Активировать в боте: промо {code}",
+    ):
+        await message.answer("⚠️ Промокод создан, но не отправлен в канал. Проверь, что бот — администратор канала.")
 
 @router.message(Command("promos"), F.chat.type == "private")
 async def cmd_promos(message: Message) -> None:
@@ -3008,6 +3036,7 @@ PRIVATE_PLAIN_COMMANDS = {
 GROUP_PLAIN_COMMANDS = {"stats", "top", "winstop", "reftop", "cointop", "daytop", "bonus"}
 BOT_ARGUMENT_COMMANDS = {
     "start", "ref", "say", "addrefs", "balance", "popolnit", "sendgift",
+    "createpromo", "createcasepromo",
     "pending", "deliver", "premiumdone", "premiumrefund", "transfer", "slots", "roulette", "dice",
 }
 PLAIN_COMMAND_HANDLERS = {
