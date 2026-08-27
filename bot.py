@@ -92,6 +92,16 @@ CASES = {
             ("gift", 50, 0.3), ("gift", 100, 0.2),
         ],
     },
+    "spider_man": {
+        "title": "SPIDER MAN",
+        "price": 7500,
+        "rewards": [
+            ("coins", 500, 5), ("coins", 1000, 10), ("coins", 1500, 14),
+            ("coins", 2500, 18), ("coins", 3500, 18), ("coins", 5000, 16),
+            ("coins", 7500, 11), ("coins", 10000, 5), ("coins", 15000, 1),
+            ("gift", 15, 2), ("gift", 25, 0.7), ("gift", 50, 0.3),
+        ],
+    },
 }
 
 BAN_MESSAGE = "🚫 Вы заблокированы и не можете участвовать в розыгрышах в боте."
@@ -975,6 +985,7 @@ def cases_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📦 KARAPUZ — 1 000 DC", callback_data="case_view_karapuz")],
         [InlineKeyboardButton(text="🩸 BLOOD — 5 000 DC", callback_data="case_view_blood")],
         [InlineKeyboardButton(text="🐆 PANTERA — 10 000 DC", callback_data="case_view_pantera")],
+        [InlineKeyboardButton(text="🕷 SPIDER MAN — 7 500 DC", callback_data="case_view_spider_man")],
     ])
 
 def case_detail_keyboard(case_id: str) -> InlineKeyboardMarkup:
@@ -1995,6 +2006,10 @@ async def open_blood_case(callback: CallbackQuery, bot: Bot) -> None:
 @router.callback_query(F.data == "case_open_pantera")
 async def open_pantera_case(callback: CallbackQuery, bot: Bot) -> None:
     await open_case(callback, bot, "pantera")
+
+@router.callback_query(F.data == "case_open_spider_man")
+async def open_spider_man_case(callback: CallbackQuery, bot: Bot) -> None:
+    await open_case(callback, bot, "spider_man")
 
 # =========================
 # GROUP — CASINO
