@@ -67,6 +67,9 @@ EXCHANGE_GIFT_50   = 50000
 EXCHANGE_GIFT_100  = 100000
 EXCHANGE_PREMIUM_1_MONTH = 500000
 
+# Покупка DC за Telegram Stars: 100 000 DC = 50⭐, до 1 000 000 DC.
+STAR_DC_PACKAGES = {amount: (amount // 100_000) * 50 for amount in range(100_000, 1_000_001, 100_000)}
+
 # Кейсы
 CASES = {
     "karapuz": {
@@ -209,6 +212,15 @@ class Database:
                     user_name   TEXT,
                     cost        INTEGER NOT NULL,
                     created_at  REAL NOT NULL
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS star_coin_purchases (
+                    payment_charge_id TEXT PRIMARY KEY,
+                    user_id           INTEGER NOT NULL,
+                    dc_amount         INTEGER NOT NULL,
+                    star_amount       INTEGER NOT NULL,
+                    created_at        REAL NOT NULL
                 )
             """)
             await db.execute("""
@@ -360,6 +372,36 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             await db.execute("DELETE FROM premium_orders WHERE id=?", (order_id,))
             await db.commit()
+
+    async def credit_star_coin_purchase(
+        self, payment_charge_id: str, user_id: int, dc_amount: int, star_amount: int
+    ) -> tuple[bool, int]:
+        """Зачисляет покупку один раз; повторный платёж Telegram не дублирует DC."""
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = await db.execute(
+                    "INSERT OR IGNORE INTO star_coin_purchases "
+                    "(payment_charge_id, user_id, dc_amount, star_amount, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (payment_charge_id, user_id, dc_amount, star_amount, time.time()),
+                )
+                if cursor.rowcount != 1:
+                    async with db.execute("SELECT balance FROM coins WHERE user_id=?", (user_id,)) as cur:
+                        row = await cur.fetchone()
+                    await db.rollback()
+                    return False, row[0] if row else COINS_START
+                await db.execute(
+                    "INSERT INTO coins (user_id, balance) VALUES (?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
+                    (user_id, COINS_START + dc_amount, dc_amount),
+                )
+                async with db.execute("SELECT balance FROM coins WHERE user_id=?", (user_id,)) as cur:
+                    row = await cur.fetchone()
+                await db.commit()
+                return True, row[0]
+            except Exception:
+                await db.rollback()
+                raise
 
     # --------------------------------------------------
     # USER STATS
@@ -798,7 +840,6 @@ class Database:
                     (user_id, case_id),
                 )
                 if cursor.rowcount == 1:
-
                     await db.commit()
                     return "key"
 
@@ -1006,7 +1047,7 @@ PLAIN_COMMANDS = {
     "ban", "unban", "banlist", "addmsgs", "removemsgs", "addday", "removeday",
     "addcoins", "removecoins", "createpromo", "deletepromo", "createcasepromo",
     "promos", "addrefs", "removerefs", "balance", "popolnit", "sendgift",
-    "pending", "deliver", "premiumorders", "premiumdone", "premiumrefund",
+    "pending", "deliver", "deletepending", "premiumorders", "premiumdone", "premiumrefund",
     "stats", "top", "winstop", "reftop", "cointop",
     "coins", "promo", "transfer", "daytop", "bonus", "cases", "slots",
     "roulette", "dice", "mines", "exchange",
@@ -1021,6 +1062,7 @@ RUSSIAN_COMMANDS = {
     "топреф": "reftop", "топкоинов": "cointop", "дневнойтоп": "daytop",
     "промо": "promo", "перевод": "transfer", "слоты": "slots",
     "рулетка": "roulette", "кубик": "dice", "мины": "mines",
+    "удалитьзаявку": "deletepending",
 }
 
 def parse_plain_command(text: str | None):
@@ -1045,6 +1087,7 @@ def start_keyboard():
         [InlineKeyboardButton(text="🔗 Реферальная ссылка", callback_data="ref")],
         [InlineKeyboardButton(text="📊 Реферальная статистика", callback_data="refstats")],
         [InlineKeyboardButton(text="📦 Кейсы", callback_data="cases")],
+        [InlineKeyboardButton(text="⭐ Купить D-COINS", callback_data="buy_dc_menu")],
         [InlineKeyboardButton(text="❓ Как играть", callback_data="help")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -1078,7 +1121,20 @@ def exchange_keyboard(balance: int):
         [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_50:,} DC → подарок 50⭐".replace(",", " "), callback_data="exch_gift_50")],
         [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_100:,} DC → подарок 100⭐".replace(",", " "), callback_data="exch_gift_100")],
         [InlineKeyboardButton(text=f"💎 {EXCHANGE_PREMIUM_1_MONTH:,} DC → Premium на месяц".replace(",", " "), callback_data="exch_premium_1m")],
+        [InlineKeyboardButton(text="⭐ Купить DC за звёзды", callback_data="buy_dc_menu")],
     ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def buy_dc_keyboard() -> InlineKeyboardMarkup:
+    buttons = []
+    for dc_amount, star_amount in STAR_DC_PACKAGES.items():
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"🪙 {dc_amount:,} DC — {star_amount}⭐".replace(",", " "),
+                callback_data=f"buy_dc_{dc_amount}",
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="◀️ К обмену", callback_data="buy_dc_back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def cases_keyboard() -> InlineKeyboardMarkup:
@@ -1599,7 +1655,6 @@ async def cmd_addrefs(message: Message, bot: Bot) -> None:
 async def cmd_removerefs(message: Message) -> None:
     if message.from_user.id != ADMIN_ID:
         return
-
     args = message.text.split()
     if len(args) < 3:
         await message.answer("Использование: /removerefs user_id количество")
@@ -1660,6 +1715,39 @@ async def successful_payment_handler(message: Message, bot: Bot) -> None:
     if payment.invoice_payload == "admin_topup":
         await message.answer(f"✅ Оплата прошла!\n💫 Зачислено: {payment.total_amount} звёзд.")
         await send_log(bot, f"💫 Пополнение\n\n👤 Админ: {message.from_user.id}\n⭐ {payment.total_amount} звёзд")
+        return
+
+    if not payment.invoice_payload.startswith("buy_dc_"):
+        return
+    try:
+        dc_amount = int(payment.invoice_payload.removeprefix("buy_dc_"))
+    except ValueError:
+        logger.warning("Unknown Stars payment payload: %s", payment.invoice_payload)
+        return
+    star_amount = STAR_DC_PACKAGES.get(dc_amount)
+    if star_amount is None or payment.total_amount != star_amount or payment.currency != "XTR":
+        logger.warning("Invalid Stars payment: payload=%s amount=%s", payment.invoice_payload, payment.total_amount)
+        return
+    credited, new_balance = await db.credit_star_coin_purchase(
+        payment.telegram_payment_charge_id,
+        message.from_user.id,
+        dc_amount,
+        star_amount,
+    )
+    if not credited:
+        await message.answer("ℹ️ Эта оплата уже была зачислена ранее.")
+        return
+    await message.answer(
+        f"✅ Оплата прошла!\n"
+        f"🪙 Зачислено: {dc_amount:,} DC\n"
+        f"⭐ Оплачено: {star_amount}⭐\n"
+        f"🪙 Баланс: {new_balance:,} DC".replace(",", " ")
+    )
+    await send_log(
+        bot,
+        f"⭐ Покупка DC\n\n👤 {display_name(message.from_user)} ({message.from_user.id})\n"
+        f"⭐ {star_amount} → 🪙 {dc_amount:,} DC".replace(",", " "),
+    )
 
 @router.message(Command("sendgift"), F.chat.type == "private")
 async def cmd_sendgift(message: Message, bot: Bot) -> None:
@@ -1696,7 +1784,11 @@ async def cmd_pending(message: Message, bot: Bot) -> None:
     text = f"📋 Невыданные подарки ({len(gifts)}):\n💫 Баланс: {star_balance.amount}⭐\n\n"
     for g_id, uid, user_name, gift_id, reason, created_at in gifts:
         date = dt.datetime.fromtimestamp(created_at).strftime("%d.%m %H:%M")
-        text += f"#{g_id} | {user_name} ({uid})\n📦 {gift_id}\n📝 {reason} | {date}\n👉 /deliver {g_id}\n\n"
+        text += (
+            f"#{g_id} | {user_name} ({uid})\n📦 {gift_id}\n📝 {reason} | {date}\n"
+            f"👉 deliver {g_id} — выдать\n"
+            f"🗑 deletepending {g_id} — удалить\n\n"
+        )
     await message.answer(text)
 
 @router.message(Command("deliver"), F.chat.type == "private")
@@ -1726,6 +1818,23 @@ async def cmd_deliver(message: Message, bot: Bot) -> None:
         await message.answer(f"✅ Подарок выдан!\n👤 {user_name} ({user_id})\n💫 Баланс: {star_balance.amount}⭐")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}\n\nПополни баланс через /popolnit")
+
+@router.message(Command("deletepending"), F.chat.type == "private")
+async def cmd_deletepending(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Использование: deletepending ID")
+        return
+    gift_db_id = int(parts[1])
+    gift = next((item for item in await db.get_pending_gifts() if item[0] == gift_db_id), None)
+    if not gift:
+        await message.answer("❌ Заявка не найдена.")
+        return
+    _, user_id, user_name, gift_id, _, _ = gift
+    await db.remove_pending_gift(gift_db_id)
+    await message.answer(f"🗑 Заявка #{gift_db_id} удалена: {user_name} ({user_id}), подарок {gift_id}.")
 
 @router.message(Command("premiumorders"), F.chat.type == "private")
 async def cmd_premiumorders(message: Message) -> None:
@@ -2400,7 +2509,6 @@ async def cmd_dice(message: Message, bot: Bot) -> None:
 
     if rolled == number:
         win = bet * 2
-
         await db.add_coins(user_id, win)
         new_balance, _ = await db.get_coins(user_id)
         await message.reply(
@@ -2633,6 +2741,51 @@ async def cmd_exchange(message: Message) -> None:
         reply_markup=exchange_keyboard(balance)
     )
 
+@router.callback_query(F.data == "buy_dc_menu")
+async def buy_dc_menu(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(
+        "⭐ Покупка D-COINS за звёзды\n\n"
+        "Курс: 2 000 DC = 1⭐\n"
+        "Выбери пакет:",
+        reply_markup=buy_dc_keyboard(),
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "buy_dc_back")
+async def buy_dc_back(callback: CallbackQuery) -> None:
+    balance, _ = await db.get_coins(callback.from_user.id)
+    await callback.message.edit_text(
+        f"💱 Обмен D-COINS\n\n🪙 Твой баланс: {balance:,} DC\n\nВыбери что хочешь получить:".replace(",", " "),
+        reply_markup=exchange_keyboard(balance),
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("buy_dc_"))
+async def buy_dc_package(callback: CallbackQuery, bot: Bot) -> None:
+    try:
+        dc_amount = int(callback.data.removeprefix("buy_dc_"))
+    except (AttributeError, ValueError):
+        await callback.answer("❌ Пакет не найден.", show_alert=True)
+        return
+    star_amount = STAR_DC_PACKAGES.get(dc_amount)
+    if star_amount is None:
+        await callback.answer("❌ Пакет не найден.", show_alert=True)
+        return
+    try:
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"{dc_amount:,} D-COINS".replace(",", " "),
+            description=f"Покупка {dc_amount:,} D-COINS за {star_amount}⭐".replace(",", " "),
+            payload=f"buy_dc_{dc_amount}",
+            currency="XTR",
+            prices=[LabeledPrice(label=f"{dc_amount:,} DC".replace(",", " "), amount=star_amount)],
+        )
+    except Exception as e:
+        logger.warning("Could not create Stars invoice: %s", e)
+        await callback.answer("❌ Не удалось создать счёт. Попробуй позже.", show_alert=True)
+        return
+    await callback.answer("⭐ Счёт отправлен в личные сообщения")
+
 @router.callback_query(F.data == "exch_chance")
 async def exch_chance(callback: CallbackQuery) -> None:
     user_id = callback.from_user.id
@@ -2849,7 +3002,7 @@ PRIVATE_PLAIN_COMMANDS = {
     "unban", "banlist", "addmsgs", "removemsgs", "addday", "removeday",
     "addcoins", "removecoins", "createpromo", "deletepromo", "createcasepromo",
     "promos", "addrefs", "removerefs", "balance", "popolnit", "sendgift",
-    "pending", "deliver", "premiumorders", "premiumdone", "premiumrefund",
+    "pending", "deliver", "deletepending", "premiumorders", "premiumdone", "premiumrefund",
     "promo", "cases", "slots", "roulette", "dice", "mines",
 }
 GROUP_PLAIN_COMMANDS = {"stats", "top", "winstop", "reftop", "cointop", "daytop", "bonus"}
@@ -2868,7 +3021,8 @@ PLAIN_COMMAND_HANDLERS = {
     "createcasepromo": cmd_createcasepromo, "promos": cmd_promos,
     "addrefs": cmd_addrefs, "removerefs": cmd_removerefs,
     "balance": cmd_balance, "popolnit": cmd_popolnit, "sendgift": cmd_sendgift,
-    "pending": cmd_pending, "deliver": cmd_deliver, "premiumorders": cmd_premiumorders,
+    "pending": cmd_pending, "deliver": cmd_deliver, "deletepending": cmd_deletepending,
+    "premiumorders": cmd_premiumorders,
     "premiumdone": cmd_premiumdone, "premiumrefund": cmd_premiumrefund,
     "stats": cmd_stats, "top": cmd_top, "winstop": cmd_winstop,
     "reftop": cmd_reftop, "cointop": cmd_cointop, "coins": cmd_coins,
@@ -3045,4 +3199,3 @@ if __name__ == "__main__":
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
     asyncio.run(main())
-
