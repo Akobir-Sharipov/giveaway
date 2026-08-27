@@ -7,7 +7,7 @@ from math import comb
 
 import aiosqlite
 import pytz
-from aiogram import Bot, Dispatcher, Router, F
+from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
 from aiogram.types import (
     Message,
     ChatMemberUpdated,
@@ -965,6 +965,43 @@ cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=COOLDOWN_SECONDS)
 casino_bet_cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=CASINO_BET_COOLDOWN)
 case_open_cooldowns: TTLCache = TTLCache(maxsize=50_000, ttl=CASE_OPEN_COOLDOWN)
 
+PLAIN_COMMANDS = {
+    "start", "help", "ref", "refstats", "say", "vip", "unvip", "viplist",
+    "ban", "unban", "banlist", "addmsgs", "removemsgs", "addday", "removeday",
+    "addcoins", "removecoins", "createpromo", "deletepromo", "createcasepromo",
+    "promos", "addrefs", "removerefs", "balance", "popolnit", "sendgift",
+    "pending", "deliver", "stats", "top", "winstop", "reftop", "cointop",
+    "coins", "promo", "transfer", "daytop", "bonus", "cases", "slots",
+    "roulette", "dice", "mines", "exchange",
+}
+
+RUSSIAN_COMMANDS = {
+    "старт": "start", "начать": "start", "помощь": "help",
+    "реф": "ref", "реферал": "ref", "рефы": "refstats",
+    "кейсы": "cases", "баланс": "coins", "монеты": "coins",
+    "обмен": "exchange", "бонус": "bonus", "стата": "stats",
+    "статистика": "stats", "топ": "top", "победители": "winstop",
+    "топреф": "reftop", "топкоинов": "cointop", "дневнойтоп": "daytop",
+    "промо": "promo", "перевод": "transfer", "слоты": "slots",
+    "рулетка": "roulette", "кубик": "dice", "мины": "mines",
+}
+
+class PlainCommandsMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        if isinstance(event, Message) and event.text and not event.text.startswith("/"):
+            parts = event.text.strip().split()
+            if parts:
+                command = parts[0].lower()
+                canonical = RUSSIAN_COMMANDS.get(command, command)
+                if canonical in PLAIN_COMMANDS:
+                    if canonical == "roulette" and len(parts) > 1:
+                        colors = {"красное": "red", "красный": "red", "черное": "black", "чёрное": "black", "черный": "black", "чёрный": "black"}
+                        parts[1] = colors.get(parts[1].lower(), parts[1])
+                    event.text = "/" + canonical + (" " + " ".join(parts[1:]) if len(parts) > 1 else "")
+        return await handler(event, data)
+
+router.message.outer_middleware(PlainCommandsMiddleware())
+
 def start_keyboard():
     buttons = [
         [InlineKeyboardButton(text="🔗 Реферальная ссылка", callback_data="ref")],
@@ -1061,13 +1098,13 @@ async def send_help(message: Message) -> None:
     await message.answer(
         "❓ Как играть\n\n"
         "🪙 Пиши сообщения в основной группе и получай DC.\n"
-        "🎁 /bonus — ежедневный бонус.\n"
-        "🎟 /promo КОД — активировать промокод на DC или ключ кейса.\n"
-        "💱 /exchange — обменять DC на шанс или подарки.\n"
-        "🎰 /slots, /roulette, /dice, /mines — казино только в личке с ботом.\n"
-        "💸 /transfer — перевести DC другому игроку.\n\n"
-        "📊 /stats — твоя статистика.\n"
-        "🪙 /coins — твой баланс."
+        "🎁 бонус — ежедневный бонус.\n"
+        "🎟 промо КОД — активировать промокод на DC или ключ кейса.\n"
+        "💱 обмен — обменять DC на шанс или подарки.\n"
+        "🎰 слоты 50, рулетка красное 50, кубик 3 50, мины 2500 — игры в личке.\n"
+        "💸 перевод @username сумма — перевести DC другому игроку.\n\n"
+        "📊 стата — твоя статистика.\n"
+        "🪙 баланс — твои DC."
     )
 
 @router.message(Command("help"))
