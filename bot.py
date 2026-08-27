@@ -2376,11 +2376,17 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot) -> None:
         return
     link_str   = invite_link.invite_link
     inviter_id = await db.get_owner_by_link(link_str)
+    # Все ссылки создаёт бот, поэтому invite_link.creator не является
+    # пригласившим пользователем. Для старых ссылок восстанавливаем ID
+    # из имени ref_<user_id>, иначе реферала не засчитываем никому.
+    if not inviter_id and invite_link.name and invite_link.name.startswith("ref_"):
+        try:
+            inviter_id = int(invite_link.name.removeprefix("ref_"))
+        except ValueError:
+            inviter_id = None
     if not inviter_id:
-        if invite_link.creator and invite_link.creator.id != member.id:
-            inviter_id = invite_link.creator.id
-        else:
-            return
+        logger.warning("Unknown referral invite link: %s", link_str)
+        return
     if inviter_id == member.id:
         return
     await db.add_referral(member.id, inviter_id)
