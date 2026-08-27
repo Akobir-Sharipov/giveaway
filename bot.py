@@ -32,6 +32,8 @@ MAIN_CHAT_ID = int(os.getenv("MAIN_CHAT_ID", "0"))
 LOG_CHAT_ID  = int(os.getenv("LOG_CHAT_ID", "0"))
 GAME_LOG_CHAT_ID = int(os.getenv("GAME_LOG_CHAT_ID", "0"))
 ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
+REQUIRED_CHANNEL = "@d_coins_channel"
+REQUIRED_CHANNEL_URL = "https://t.me/d_coins_channel"
 
 COOLDOWN_SECONDS   = 1
 START_CHANCE       = 0.1
@@ -970,6 +972,27 @@ def start_keyboard():
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+def subscription_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Подписаться на канал", url=REQUIRED_CHANNEL_URL)],
+        [InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_subscription")],
+    ])
+
+async def is_channel_subscriber(bot: Bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        status = getattr(member.status, "value", member.status)
+        return status not in {"left", "kicked"}
+    except Exception as e:
+        logger.warning("Subscription check failed for %s: %s", user_id, e)
+        return False
+
+async def send_subscription_prompt(message: Message) -> None:
+    await message.answer(
+        "📢 Чтобы пользоваться ботом, подпишись на наш канал.",
+        reply_markup=subscription_keyboard(),
+    )
+
 def exchange_keyboard(balance: int):
     buttons = [
         [InlineKeyboardButton(text=f"📈 {EXCHANGE_CHANCE:,} DC → +1% шанса".replace(",", " "), callback_data="exch_chance")],
@@ -999,14 +1022,28 @@ def case_detail_keyboard(case_id: str) -> InlineKeyboardMarkup:
 # =========================
 
 @router.message(Command("start"), F.chat.type == "private")
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, bot: Bot) -> None:
     if await db.is_banned(message.from_user.id):
         await message.answer(BAN_MESSAGE)
+        return
+    if not await is_channel_subscriber(bot, message.from_user.id):
+        await send_subscription_prompt(message)
         return
     await message.answer(
         "👋 Добро пожаловать!\n\nВыберите действие:",
         reply_markup=start_keyboard()
     )
+
+@router.callback_query(F.data == "check_subscription")
+async def check_subscription(callback: CallbackQuery, bot: Bot) -> None:
+    if not await is_channel_subscriber(bot, callback.from_user.id):
+        await callback.answer("❌ Подписка пока не найдена.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "👋 Добро пожаловать!\n\nВыберите действие:",
+        reply_markup=start_keyboard(),
+    )
+    await callback.answer("✅ Подписка подтверждена")
 
 @router.callback_query(F.data == "ref")
 async def ref_callback(callback: CallbackQuery, bot: Bot):
