@@ -32,6 +32,7 @@ MAIN_CHAT_ID = int(os.getenv("MAIN_CHAT_ID", "0"))
 LOG_CHAT_ID  = int(os.getenv("LOG_CHAT_ID", "0"))
 GAME_LOG_CHAT_ID = int(os.getenv("GAME_LOG_CHAT_ID", "0"))
 ADMIN_ID     = int(os.getenv("ADMIN_ID", "0"))
+# Обязательная подписка перед открытием меню бота.
 REQUIRED_CHANNEL = "@d_coins_channel"
 REQUIRED_CHANNEL_URL = "https://t.me/d_coins_channel"
 
