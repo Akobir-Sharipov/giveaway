@@ -67,8 +67,8 @@ EXCHANGE_GIFT_50   = 50000
 EXCHANGE_GIFT_100  = 100000
 EXCHANGE_PREMIUM_1_MONTH = 500000
 
-# Покупка DC за Telegram Stars: 100 000 DC = 50⭐, до 1 000 000 DC.
-STAR_DC_PACKAGES = {amount: (amount // 100_000) * 50 for amount in range(100_000, 1_000_001, 100_000)}
+# Покупка DC за Telegram Stars: 100 000 DC = 200⭐, до 1 000 000 DC.
+STAR_DC_PACKAGES = {amount: (amount // 100_000) * 200 for amount in range(100_000, 1_000_001, 100_000)}
 
 # Кейсы
 CASES = {
@@ -2745,7 +2745,7 @@ async def cmd_exchange(message: Message) -> None:
 async def buy_dc_menu(callback: CallbackQuery) -> None:
     await callback.message.edit_text(
         "⭐ Покупка D-COINS за звёзды\n\n"
-        "Курс: 2 000 DC = 1⭐\n"
+        "Курс: 500 DC = 1⭐\n"
         "Выбери пакет:",
         reply_markup=buy_dc_keyboard(),
     )
