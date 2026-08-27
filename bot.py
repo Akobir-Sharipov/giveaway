@@ -7,7 +7,7 @@ from math import comb
 
 import aiosqlite
 import pytz
-from aiogram import Bot, Dispatcher, Router, F, BaseMiddleware
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
     Message,
     ChatMemberUpdated,
@@ -986,21 +986,22 @@ RUSSIAN_COMMANDS = {
     "рулетка": "roulette", "кубик": "dice", "мины": "mines",
 }
 
-class PlainCommandsMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event, data):
-        if isinstance(event, Message) and event.text and not event.text.startswith("/"):
-            parts = event.text.strip().split()
-            if parts:
-                command = parts[0].lower()
-                canonical = RUSSIAN_COMMANDS.get(command, command)
-                if canonical in PLAIN_COMMANDS:
-                    if canonical == "roulette" and len(parts) > 1:
-                        colors = {"красное": "red", "красный": "red", "черное": "black", "чёрное": "black", "черный": "black", "чёрный": "black"}
-                        parts[1] = colors.get(parts[1].lower(), parts[1])
-                    event.text = "/" + canonical + (" " + " ".join(parts[1:]) if len(parts) > 1 else "")
-        return await handler(event, data)
+def parse_plain_command(text: str | None):
+    if not text or text.startswith("/"):
+        return None
+    parts = text.strip().split()
+    if not parts:
+        return None
+    command = RUSSIAN_COMMANDS.get(parts[0].lower(), parts[0].lower())
+    if command not in PLAIN_COMMANDS:
+        return None
+    if command == "roulette" and len(parts) > 1:
+        colors = {"красное": "red", "красный": "red", "черное": "black", "чёрное": "black", "черный": "black", "чёрный": "black"}
+        parts[1] = colors.get(parts[1].lower(), parts[1])
+    return command, parts[1:]
 
-router.message.outer_middleware(PlainCommandsMiddleware())
+def is_plain_command(message: Message) -> bool:
+    return parse_plain_command(message.text) is not None
 
 def start_keyboard():
     buttons = [
@@ -2690,6 +2691,58 @@ async def on_user_join(event: ChatMemberUpdated, bot: Bot) -> None:
         f"👥 Пригласил: {inviter_id}\n"
         f"⏳ Нужно сообщений: {VALID_REF_MESSAGES}"
     )
+
+# Обычные слова вместо команд со слешем. Этот обработчик расположен до
+# group_handler, поэтому команды не засчитываются как обычные сообщения.
+PRIVATE_PLAIN_COMMANDS = {
+    "start", "ref", "refstats", "say", "vip", "unvip", "viplist", "ban",
+    "unban", "banlist", "addmsgs", "removemsgs", "addday", "removeday",
+    "addcoins", "removecoins", "createpromo", "deletepromo", "createcasepromo",
+    "promos", "addrefs", "removerefs", "balance", "popolnit", "sendgift",
+    "pending", "deliver", "promo", "cases", "slots", "roulette", "dice", "mines",
+}
+GROUP_PLAIN_COMMANDS = {"stats", "top", "winstop", "reftop", "cointop", "daytop", "bonus"}
+BOT_ARGUMENT_COMMANDS = {
+    "start", "ref", "say", "addrefs", "balance", "popolnit", "sendgift",
+    "pending", "deliver", "transfer", "slots", "roulette", "dice",
+}
+PLAIN_COMMAND_HANDLERS = {
+    "start": cmd_start, "help": cmd_help, "ref": cmd_ref, "refstats": cmd_refstats,
+    "say": cmd_say, "vip": cmd_vip, "unvip": cmd_unvip, "viplist": cmd_viplist,
+    "ban": cmd_ban, "unban": cmd_unban, "banlist": cmd_banlist,
+    "addmsgs": cmd_addmsgs, "removemsgs": cmd_removemsgs,
+    "addday": cmd_addday, "removeday": cmd_removeday,
+    "addcoins": cmd_addcoins, "removecoins": cmd_removecoins,
+    "createpromo": cmd_createpromo, "deletepromo": cmd_deletepromo,
+    "createcasepromo": cmd_createcasepromo, "promos": cmd_promos,
+    "addrefs": cmd_addrefs, "removerefs": cmd_removerefs,
+    "balance": cmd_balance, "popolnit": cmd_popolnit, "sendgift": cmd_sendgift,
+    "pending": cmd_pending, "deliver": cmd_deliver,
+    "stats": cmd_stats, "top": cmd_top, "winstop": cmd_winstop,
+    "reftop": cmd_reftop, "cointop": cmd_cointop, "coins": cmd_coins,
+    "promo": cmd_promo, "transfer": cmd_transfer, "daytop": cmd_daytop,
+    "bonus": cmd_bonus, "cases": cmd_cases, "slots": cmd_slots,
+    "roulette": cmd_roulette, "dice": cmd_dice, "mines": cmd_mines,
+    "exchange": cmd_exchange,
+}
+
+@router.message(is_plain_command)
+async def plain_command_handler(message: Message, bot: Bot) -> None:
+    parsed = parse_plain_command(message.text)
+    if not parsed:
+        return
+    command, args = parsed
+    if command in PRIVATE_PLAIN_COMMANDS and message.chat.type != "private":
+        return
+    if command in GROUP_PLAIN_COMMANDS and message.chat.id != MAIN_CHAT_ID:
+        return
+
+    command_message = message.model_copy(update={"text": "/" + command + (" " + " ".join(args) if args else "")})
+    handler = PLAIN_COMMAND_HANDLERS[command]
+    if command in BOT_ARGUMENT_COMMANDS:
+        await handler(command_message, bot)
+    else:
+        await handler(command_message)
 
 # =========================
 # MAIN GROUP HANDLER
