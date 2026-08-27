@@ -65,6 +65,7 @@ EXCHANGE_GIFT_15   = 15000
 EXCHANGE_GIFT_25   = 25000
 EXCHANGE_GIFT_50   = 50000
 EXCHANGE_GIFT_100  = 100000
+EXCHANGE_PREMIUM_1_MONTH = 500000
 
 # Кейсы
 CASES = {
@@ -202,6 +203,15 @@ class Database:
                 )
             """)
             await db.execute("""
+                CREATE TABLE IF NOT EXISTS premium_orders (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id     INTEGER NOT NULL,
+                    user_name   TEXT,
+                    cost        INTEGER NOT NULL,
+                    created_at  REAL NOT NULL
+                )
+            """)
+            await db.execute("""
                 CREATE TABLE IF NOT EXISTS vip_users (
                     user_id INTEGER PRIMARY KEY
                 )
@@ -324,6 +334,31 @@ class Database:
     async def remove_pending_gift(self, gift_db_id: int) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute("DELETE FROM pending_gifts WHERE id=?", (gift_db_id,))
+            await db.commit()
+
+    # --------------------------------------------------
+    # PREMIUM ORDERS
+    # --------------------------------------------------
+
+    async def add_premium_order(self, user_id: int, user_name: str, cost: int) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            cursor = await db.execute(
+                "INSERT INTO premium_orders (user_id, user_name, cost, created_at) VALUES (?, ?, ?, ?)",
+                (user_id, user_name, cost, time.time()),
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+    async def get_premium_orders(self) -> list:
+        async with aiosqlite.connect(self.path) as db:
+            async with db.execute(
+                "SELECT id, user_id, user_name, cost, created_at FROM premium_orders ORDER BY created_at ASC"
+            ) as cur:
+                return await cur.fetchall()
+
+    async def remove_premium_order(self, order_id: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("DELETE FROM premium_orders WHERE id=?", (order_id,))
             await db.commit()
 
     # --------------------------------------------------
@@ -763,6 +798,7 @@ class Database:
                     (user_id, case_id),
                 )
                 if cursor.rowcount == 1:
+
                     await db.commit()
                     return "key"
 
@@ -970,7 +1006,8 @@ PLAIN_COMMANDS = {
     "ban", "unban", "banlist", "addmsgs", "removemsgs", "addday", "removeday",
     "addcoins", "removecoins", "createpromo", "deletepromo", "createcasepromo",
     "promos", "addrefs", "removerefs", "balance", "popolnit", "sendgift",
-    "pending", "deliver", "stats", "top", "winstop", "reftop", "cointop",
+    "pending", "deliver", "premiumorders", "premiumdone", "premiumrefund",
+    "stats", "top", "winstop", "reftop", "cointop",
     "coins", "promo", "transfer", "daytop", "bonus", "cases", "slots",
     "roulette", "dice", "mines", "exchange",
 }
@@ -1040,6 +1077,7 @@ def exchange_keyboard(balance: int):
         [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_25:,} DC → подарок 25⭐".replace(",", " "), callback_data="exch_gift_25")],
         [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_50:,} DC → подарок 50⭐".replace(",", " "), callback_data="exch_gift_50")],
         [InlineKeyboardButton(text=f"🎁 {EXCHANGE_GIFT_100:,} DC → подарок 100⭐".replace(",", " "), callback_data="exch_gift_100")],
+        [InlineKeyboardButton(text=f"💎 {EXCHANGE_PREMIUM_1_MONTH:,} DC → Premium на месяц".replace(",", " "), callback_data="exch_premium_1m")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -1111,7 +1149,7 @@ async def send_help(message: Message) -> None:
         "В минах открывай клетки и забирай выигрыш до того, как попадёшь на бомбу.\n\n"
         "💱 Полезное\n"
         "• баланс — твои DC\n"
-        "• обмен — обмен DC на шанс или подарки\n"
+        "• обмен — обмен DC на шанс, подарки или Premium\n"
         "• промо КОД — активировать промокод\n"
         "• перевод @username сумма — отправить DC игроку\n"
         "• реферал — получить ссылку\n"
@@ -1561,6 +1599,7 @@ async def cmd_addrefs(message: Message, bot: Bot) -> None:
 async def cmd_removerefs(message: Message) -> None:
     if message.from_user.id != ADMIN_ID:
         return
+
     args = message.text.split()
     if len(args) < 3:
         await message.answer("Использование: /removerefs user_id количество")
@@ -1687,6 +1726,72 @@ async def cmd_deliver(message: Message, bot: Bot) -> None:
         await message.answer(f"✅ Подарок выдан!\n👤 {user_name} ({user_id})\n💫 Баланс: {star_balance.amount}⭐")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}\n\nПополни баланс через /popolnit")
+
+@router.message(Command("premiumorders"), F.chat.type == "private")
+async def cmd_premiumorders(message: Message) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    orders = await db.get_premium_orders()
+    if not orders:
+        await message.answer("✅ Заявок на Premium нет.")
+        return
+    import datetime as dt
+    text = f"💎 Заявки Premium на месяц ({len(orders)}):\n\n"
+    for order_id, user_id, user_name, cost, created_at in orders:
+        date = dt.datetime.fromtimestamp(created_at).strftime("%d.%m %H:%M")
+        text += (
+            f"#{order_id} | {user_name} ({user_id})\n"
+            f"🪙 {cost:,} DC | {date}\n"
+            f"После выдачи: premiumdone {order_id}\n"
+            f"Возврат: premiumrefund {order_id}\n\n"
+        ).replace(",", " ")
+    await message.answer(text)
+
+@router.message(Command("premiumdone"), F.chat.type == "private")
+async def cmd_premiumdone(message: Message, bot: Bot) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Использование: premiumdone ID")
+        return
+    order_id = int(parts[1])
+    order = next((item for item in await db.get_premium_orders() if item[0] == order_id), None)
+    if not order:
+        await message.answer("❌ Заявка не найдена.")
+        return
+    _, user_id, user_name, _, _ = order
+    await db.remove_premium_order(order_id)
+    await message.answer(f"✅ Premium отмечен как выданный: {user_name} ({user_id}).")
+    try:
+        await bot.send_message(user_id, "💎 Premium на месяц выдан. Спасибо за обмен!")
+    except Exception as e:
+        logger.warning("Could not notify Premium recipient: %s", e)
+
+@router.message(Command("premiumrefund"), F.chat.type == "private")
+async def cmd_premiumrefund(message: Message, bot: Bot) -> None:
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        await message.answer("Использование: premiumrefund ID")
+        return
+    order_id = int(parts[1])
+    order = next((item for item in await db.get_premium_orders() if item[0] == order_id), None)
+    if not order:
+        await message.answer("❌ Заявка не найдена.")
+        return
+    _, user_id, user_name, cost, _ = order
+    new_balance = await db.add_coins(user_id, cost)
+    await db.remove_premium_order(order_id)
+    await message.answer(f"↩️ Возвращено {cost:,} DC игроку {user_name} ({user_id}).".replace(",", " "))
+    try:
+        await bot.send_message(
+            user_id,
+            f"↩️ Premium пока недоступен — тебе вернули {cost:,} DC.\n🪙 Баланс: {new_balance:,} DC".replace(",", " "),
+        )
+    except Exception as e:
+        logger.warning("Could not notify Premium refund recipient: %s", e)
 
 # =========================
 # GROUP — /stats
@@ -2295,6 +2400,7 @@ async def cmd_dice(message: Message, bot: Bot) -> None:
 
     if rolled == number:
         win = bet * 2
+
         await db.add_coins(user_id, win)
         new_balance, _ = await db.get_coins(user_id)
         await message.reply(
@@ -2653,6 +2759,50 @@ async def exch_gift_50(callback: CallbackQuery, bot: Bot) -> None:
 async def exch_gift_100(callback: CallbackQuery, bot: Bot) -> None:
     await process_exchange_gift(callback, EXCHANGE_GIFT_100, 20, "100⭐", bot)
 
+@router.callback_query(F.data == "exch_premium_1m")
+async def exch_premium_1m(callback: CallbackQuery, bot: Bot) -> None:
+    user_id = callback.from_user.id
+    if await db.is_banned(user_id):
+        await callback.answer(BAN_MESSAGE, show_alert=True)
+        return
+    if not await db.remove_coins(user_id, EXCHANGE_PREMIUM_1_MONTH):
+        balance, _ = await db.get_coins(user_id)
+        await callback.answer(
+            f"❌ Нужно {EXCHANGE_PREMIUM_1_MONTH:,} DC, у тебя {balance:,}".replace(",", " "),
+            show_alert=True,
+        )
+        return
+
+    name = await db.get_user_name(user_id)
+    try:
+        order_id = await db.add_premium_order(user_id, name, EXCHANGE_PREMIUM_1_MONTH)
+    except Exception:
+        await db.add_coins(user_id, EXCHANGE_PREMIUM_1_MONTH)
+        logger.exception("Could not create Premium order")
+        await callback.answer("❌ Не удалось создать заявку. DC возвращены.", show_alert=True)
+        return
+
+    new_balance, _ = await db.get_coins(user_id)
+    await callback.message.edit_text(
+        f"✅ Заявка #{order_id} на Premium на месяц создана\n"
+        f"🪙 Списано: {EXCHANGE_PREMIUM_1_MONTH:,} DC\n"
+        f"🪙 Баланс: {new_balance:,} DC\n\n"
+        "💎 Premium будет выдан вручную в ближайшее время.".replace(",", " "),
+        reply_markup=exchange_keyboard(new_balance),
+    )
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💎 Новая заявка Premium на месяц\n\n"
+            f"#{order_id} | {name} ({user_id})\n"
+            f"🪙 {EXCHANGE_PREMIUM_1_MONTH:,} DC\n\n"
+            f"После выдачи: premiumdone {order_id}".replace(",", " "),
+        )
+        await send_log(bot, f"💎 Обмен на Premium\n\n#{order_id} | {name} ({user_id})\n{EXCHANGE_PREMIUM_1_MONTH:,} DC".replace(",", " "))
+    except Exception as e:
+        logger.warning("Could not notify about Premium order: %s", e)
+    await callback.answer("✅ Заявка создана")
+
 # =========================
 # NEW MEMBERS
 # =========================
@@ -2699,12 +2849,13 @@ PRIVATE_PLAIN_COMMANDS = {
     "unban", "banlist", "addmsgs", "removemsgs", "addday", "removeday",
     "addcoins", "removecoins", "createpromo", "deletepromo", "createcasepromo",
     "promos", "addrefs", "removerefs", "balance", "popolnit", "sendgift",
-    "pending", "deliver", "promo", "cases", "slots", "roulette", "dice", "mines",
+    "pending", "deliver", "premiumorders", "premiumdone", "premiumrefund",
+    "promo", "cases", "slots", "roulette", "dice", "mines",
 }
 GROUP_PLAIN_COMMANDS = {"stats", "top", "winstop", "reftop", "cointop", "daytop", "bonus"}
 BOT_ARGUMENT_COMMANDS = {
     "start", "ref", "say", "addrefs", "balance", "popolnit", "sendgift",
-    "pending", "deliver", "transfer", "slots", "roulette", "dice",
+    "pending", "deliver", "premiumdone", "premiumrefund", "transfer", "slots", "roulette", "dice",
 }
 PLAIN_COMMAND_HANDLERS = {
     "start": cmd_start, "help": cmd_help, "ref": cmd_ref, "refstats": cmd_refstats,
@@ -2717,7 +2868,8 @@ PLAIN_COMMAND_HANDLERS = {
     "createcasepromo": cmd_createcasepromo, "promos": cmd_promos,
     "addrefs": cmd_addrefs, "removerefs": cmd_removerefs,
     "balance": cmd_balance, "popolnit": cmd_popolnit, "sendgift": cmd_sendgift,
-    "pending": cmd_pending, "deliver": cmd_deliver,
+    "pending": cmd_pending, "deliver": cmd_deliver, "premiumorders": cmd_premiumorders,
+    "premiumdone": cmd_premiumdone, "premiumrefund": cmd_premiumrefund,
     "stats": cmd_stats, "top": cmd_top, "winstop": cmd_winstop,
     "reftop": cmd_reftop, "cointop": cmd_cointop, "coins": cmd_coins,
     "promo": cmd_promo, "transfer": cmd_transfer, "daytop": cmd_daytop,
